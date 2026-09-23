@@ -64,3 +64,14 @@ function setWebhook() {
   Logger.log(JSON.stringify(result));
   return result;
 }
+
+/**
+ * Debug helper: run this from the editor (View > Logs afterwards, or check the
+ * Executions entry) to see Telegram's current webhook status without having to
+ * paste BOT_TOKEN into a browser URL by hand.
+ */
+function checkWebhookStatus() {
+  var info = telegramCall_('getWebhookInfo', {});
+  Logger.log(JSON.stringify(info, null, 2));
+  return info;
+}
