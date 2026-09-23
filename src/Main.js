@@ -1,43 +1,58 @@
 /**
- * Telegram webhook entry point. Wires Parser.js (pure parsing) to Ledger.js (sheet I/O)
- * and Telegram.js (bot API), with auth + dedupe in front.
+ * Polling entry point. Apps Script Web Apps always answer with an HTTP 302 redirect
+ * (to serve the response body from a second URL), and Telegram's webhook client
+ * refuses to follow redirects - it logs "Wrong response from the webhook: 302 Found"
+ * and keeps retrying forever. So instead of a webhook, a time-driven trigger calls
+ * pollUpdates() once a minute, which pulls new messages with getUpdates().
+ *
+ * Wires Parser.js (pure parsing) to Ledger.js (sheet I/O) and Telegram.js (bot API).
  */
 
 var PENDING_TTL_SECONDS = 600; // 10 minutes
-var UPDATE_DEDUPE_TTL_SECONDS = 21600; // 6 hours, matches Telegram's own retry window
+var POLL_INTERVAL_MINUTES = 1;
 
-function doPost(e) {
-  try {
-    if (!isAuthorizedRequest_(e)) return ContentService.createTextOutput('ok');
+function pollUpdates() {
+  var props = PropertiesService.getScriptProperties();
+  var offset = Number(props.getProperty('LAST_UPDATE_ID') || '0');
 
-    var update = JSON.parse(e.postData.contents);
-    if (isDuplicateUpdate_(update.update_id)) return ContentService.createTextOutput('ok');
-
-    if (update.message) {
-      handleMessage_(update.message);
-    } else if (update.callback_query) {
-      handleCallbackQuery_(update.callback_query);
-    }
-  } catch (err) {
-    Logger.log('doPost error: ' + err + (err && err.stack ? '\n' + err.stack : ''));
+  var response = getUpdates(offset);
+  if (!response.ok) {
+    Logger.log('getUpdates failed: ' + JSON.stringify(response));
+    return;
   }
-  return ContentService.createTextOutput('ok');
+
+  response.result.forEach(function (update) {
+    try {
+      if (update.message) {
+        handleMessage_(update.message);
+      } else if (update.callback_query) {
+        handleCallbackQuery_(update.callback_query);
+      }
+    } catch (err) {
+      Logger.log('pollUpdates error on update ' + update.update_id + ': ' + err + (err && err.stack ? '\n' + err.stack : ''));
+    }
+    offset = update.update_id + 1;
+  });
+
+  if (response.result.length > 0) {
+    props.setProperty('LAST_UPDATE_ID', String(offset));
+  }
 }
 
-function isAuthorizedRequest_(e) {
-  var expectedSecret = PropertiesService.getScriptProperties().getProperty('WEBHOOK_SECRET');
-  if (!expectedSecret) return true; // not configured yet, e.g. during first setup
-  var got = e && e.parameter && e.parameter.secret;
-  return got === expectedSecret;
-}
+/**
+ * One-time setup: clears any leftover webhook (so getUpdates is allowed to work -
+ * Telegram refuses polling while a webhook is registered) and installs the
+ * time-driven trigger. Safe to re-run; it replaces any existing trigger.
+ */
+function setupPolling() {
+  deleteWebhook();
 
-function isDuplicateUpdate_(updateId) {
-  if (updateId === undefined || updateId === null) return false;
-  var cache = CacheService.getScriptCache();
-  var key = 'upd_' + updateId;
-  if (cache.get(key)) return true;
-  cache.put(key, '1', UPDATE_DEDUPE_TTL_SECONDS);
-  return false;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'pollUpdates') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('pollUpdates').timeBased().everyMinutes(POLL_INTERVAL_MINUTES).create();
+
+  Logger.log('Polling trigger installed: pollUpdates every ' + POLL_INTERVAL_MINUTES + ' minute(s).');
 }
 
 function isAllowedChat_(chatId) {

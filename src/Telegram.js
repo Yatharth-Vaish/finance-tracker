@@ -55,12 +55,22 @@ function inlineKeyboard(rows) {
   };
 }
 
-function setWebhook() {
-  var url = PropertiesService.getScriptProperties().getProperty('WEBHOOK_URL');
-  var secret = PropertiesService.getScriptProperties().getProperty('WEBHOOK_SECRET');
-  if (!url) throw new Error('Set WEBHOOK_URL in Script Properties first (the /exec URL from Deploy > Web app).');
-  var fullUrl = url + (url.indexOf('?') === -1 ? '?' : '&') + 'secret=' + encodeURIComponent(secret || '');
-  var result = telegramCall_('setWebhook', { url: fullUrl });
+/**
+ * Pulls new updates since `offset` (Telegram's own ack cursor: passing offset = N
+ * tells Telegram every update below N has been handled and can stop being resent).
+ */
+function getUpdates(offset) {
+  return telegramCall_('getUpdates', { offset: offset, timeout: 0, allowed_updates: ['message', 'callback_query'] });
+}
+
+/**
+ * Apps Script Web Apps can't serve a webhook Telegram accepts (see the comment atop
+ * Main.js), so this project polls instead. Telegram refuses to hand out updates via
+ * getUpdates while a webhook URL is registered, so this must be called once before
+ * polling will return anything - see setupPolling() in Main.js.
+ */
+function deleteWebhook() {
+  var result = telegramCall_('deleteWebhook', { drop_pending_updates: true });
   Logger.log(JSON.stringify(result));
   return result;
 }

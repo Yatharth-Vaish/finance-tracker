@@ -5,8 +5,8 @@ Telegram bot → Google Sheets cash flow ledger, running entirely on Google Apps
 
 ## Layout
 
-- `src/*.js` — Apps Script source, pushed to Google with `clasp push`. Deployed via the
-  Apps Script editor (Deploy → Web app), not via any CI here.
+- `src/*.js` — Apps Script source, pushed to Google with `clasp push`. No deployment step:
+  the bot is polled by a time-driven trigger (`pollUpdates`), not served as a web app.
 - `src/Parser.js` is the only file that's pure JS with no Apps Script globals — it has a
   `module.exports` guard at the bottom so `test/parser.test.js` can run it under plain Node.
   Every other `src/*.js` file depends on `SpreadsheetApp`, `UrlFetchApp`, `PropertiesService`,
@@ -14,8 +14,8 @@ Telegram bot → Google Sheets cash flow ledger, running entirely on Google Apps
   test those directly; changes to them are verified by running the bot for real (see README).
 - `.clasp.json` holds the bound script's `scriptId` and `rootDir: "src"`. It has no secrets
   and is committed.
-- Real secrets (`BOT_TOKEN`, `WEBHOOK_SECRET`, `ALLOWED_CHAT_ID`, `WEBHOOK_URL`) live in
-  Apps Script's Script Properties, set through the Apps Script editor UI — never in this repo.
+- Real secrets (`BOT_TOKEN`, `ALLOWED_CHAT_ID`) live in Apps Script's Script Properties, set
+  through the Apps Script editor UI — never in this repo.
 
 ## Conventions
 
@@ -28,9 +28,15 @@ Telegram bot → Google Sheets cash flow ledger, running entirely on Google Apps
   `readCategories()` in `Ledger.js` reads it live.
 - Telegram `callback_data` has a 64-byte limit — keep callback prefixes short (`s:`, `c:`,
   `sc:`, `b:`, `ud`, `no`) rather than descriptive strings.
-- `doPost` always returns 200 (`ok`), even on internal errors (caught and logged) — Telegram
-  retries aggressively on non-200s, and retries are already deduped via `update_id`, so a
-  hard failure response would just cause pointless retry storms.
+- `pollUpdates` never lets one bad update stop the loop: each update is wrapped in its own
+  try/catch (logged, not rethrown), and the `LAST_UPDATE_ID` offset still advances past it.
+  Don't remove that per-update try/catch — a single unhandled exception would otherwise
+  freeze processing on the same poisoned update forever, since `getUpdates` keeps returning
+  it until the offset moves past it.
+- Don't reintroduce a webhook (`doPost` + Web app deployment). It was the original design
+  but Apps Script Web Apps always answer with an HTTP 302, which Telegram's webhook client
+  won't follow — Telegram logs "Wrong response from the webhook: 302 Found" and never
+  delivers reliably. Polling is the fix, not a stopgap.
 
 ## Testing
 

@@ -10,7 +10,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Finance Tracker')
     .addItem('Run setup (Ledger / Categories / Dashboard)', 'setupSpreadsheet')
-    .addItem('Set Telegram webhook', 'setWebhook')
+    .addItem('Start Telegram polling', 'setupPolling')
     .addToUi();
 }
 

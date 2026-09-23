@@ -4,10 +4,14 @@ Log expenses and income from Telegram; they land as rows in a Google Sheet with 
 Dashboard tab. See `/Users/yatharthvaish/.claude/plans/effervescent-twirling-globe.md`
 for the design rationale.
 
+The bot is polled, not webhooked: Apps Script Web Apps always answer with an HTTP 302
+redirect, which Telegram's webhook client refuses to follow, so a webhook never actually
+works here. Instead a time-driven trigger calls `pollUpdates()` once a minute.
+
 - `src/Parser.js` — pure text parsing (`"60 snacks"` → `{type, amount, category, ...}`), unit tested.
-- `src/Telegram.js` — Bot API wrapper (send/edit messages, inline keyboards).
+- `src/Telegram.js` — Bot API wrapper (send/edit messages, inline keyboards, `getUpdates`).
 - `src/Ledger.js` — reads/writes the `Ledger` and `Categories` sheets.
-- `src/Main.js` — `doPost(e)`, the webhook entry point.
+- `src/Main.js` — `pollUpdates()`, called every minute by a time-driven trigger.
 - `src/Setup.js` — `setupSpreadsheet()` builds the Ledger/Categories/Dashboard tabs and charts.
 
 ## One-time setup
@@ -50,26 +54,23 @@ Open the Sheet (the URL clasp printed in step 3, or find "Finance Tracker" in Go
 In the Sheet: **Extensions → Apps Script**, then **Project Settings (gear icon) → Script Properties**, add:
 
 - `BOT_TOKEN` — from BotFather
-- `WEBHOOK_SECRET` — any long random string you make up (e.g. `openssl rand -hex 16`)
 
 Back in the code editor, run `setupSpreadsheet` once (Google will ask you to authorize the
 script — approve it). This builds the Ledger, Categories, and Dashboard tabs.
 
-### 5. Deploy as a web app
+### 5. Start polling
 
-**Deploy → New deployment → type: Web app** → execute as *Me*, who has access: *Anyone*.
-Copy the `/exec` URL it gives you.
+Run `setupPolling` from the code editor (open `Main.js`, pick `setupPolling` from the
+function dropdown, click Run), or use the **Finance Tracker → Start Telegram polling**
+menu in the Sheet once you reload it. This clears any stale webhook registration and
+installs a trigger that checks Telegram for new messages every minute.
 
-Add one more Script Property:
-
-- `WEBHOOK_URL` — the `/exec` URL you just copied
-
-Run `setWebhook` from the code editor (or the **Finance Tracker** menu in the Sheet once you reload it).
+No deployment step is needed — there's no web app, nothing to expose publicly.
 
 ### 6. Point the bot at your chat
 
-Open a DM with your bot on Telegram and send anything. It replies with your chat ID.
-Add a final Script Property:
+Open a DM with your bot on Telegram and send anything. It replies with your chat ID
+(may take up to a minute, since it's polled). Add a final Script Property:
 
 - `ALLOWED_CHAT_ID` — the number it gave you
 
