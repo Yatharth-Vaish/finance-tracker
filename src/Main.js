@@ -77,15 +77,17 @@ function handleMessage_(message) {
     return;
   }
 
-  var parsed = parseEntry(text, readCategories());
+  var options = readOptions();
+  var parsed = parseEntry(text, readCategories(), options);
   if (!parsed) {
     sendMessage(chatId, helpText_());
     return;
   }
+  applyDefaults(parsed, options, getLastPayment());
 
   var pid = Utilities.getUuid().slice(0, 8);
-  CacheService.getScriptCache().put('pending_' + pid, JSON.stringify(parsed), PENDING_TTL_SECONDS);
-  sendMessage(chatId, previewText_(parsed), paymentKeyboard_(pid));
+  putPending_(pid, parsed);
+  sendMessage(chatId, previewText_(parsed), entryKeyboard_(pid, parsed, options));
 }
 
 function handleCommand_(chatId, text) {
@@ -110,19 +112,44 @@ function handleCallbackQuery_(cq) {
   var messageId = cq.message.message_id;
   var parts = cq.data.split(':');
   var action = parts[0];
+  var pid = parts[1];
+  var index = Number(parts[2]);
 
   if (action === 's') {
-    saveFromCallback_(cq, chatId, messageId, parts[1], parts[2]);
+    saveFromCallback_(cq, chatId, messageId, pid);
   } else if (action === 'c') {
-    showCategoryChooser_(cq, chatId, messageId, parts[1]);
+    showCategoryChooser_(cq, chatId, messageId, pid);
   } else if (action === 'sc') {
-    setCategoryFromCallback_(cq, chatId, messageId, parts[1], Number(parts[2]));
+    editPending_(cq, chatId, messageId, pid, function (entry) {
+      var picked = getSelectableCategories(entry.type)[index];
+      if (picked) {
+        entry.type = picked.type;
+        entry.category = picked.category;
+      }
+    });
+  } else if (action === 'a') {
+    editPending_(cq, chatId, messageId, pid, function (entry, options) {
+      var account = options.accounts[index];
+      if (!account) return;
+      var method = account.methods.find(function (m) { return m.label === entry.method; }) || account.methods[0] || null;
+      entry.account = account.name;
+      setMethod_(entry, method);
+    });
+  } else if (action === 'p') {
+    editPending_(cq, chatId, messageId, pid, function (entry, options) {
+      var account = findByName_(options.accounts, entry.account);
+      if (account && account.methods[index]) setMethod_(entry, account.methods[index]);
+    });
+  } else if (action === 'f') {
+    editPending_(cq, chatId, messageId, pid, function (entry, options) {
+      if (options.people[index]) entry.forWho = options.people[index].name;
+    });
   } else if (action === 'b') {
-    backToPreview_(cq, chatId, messageId, parts[1]);
+    editPending_(cq, chatId, messageId, pid, function () {});
   } else if (action === 'ud') {
     var deleted = deleteLastEntry();
     editMessageText(chatId, messageId, deleted
-      ? 'Deleted: ' + deleted.Description + ' (₹' + Math.abs(deleted.Amount) + ')'
+      ? 'Deleted: ' + escapeHtml_(deleted.Description) + ' (₹' + Math.abs(deleted.Amount) + ')'
       : 'Nothing to undo.');
     answerCallbackQuery(cq.id);
   } else if (action === 'no') {
@@ -142,18 +169,40 @@ function putPending_(pid, entry) {
   CacheService.getScriptCache().put('pending_' + pid, JSON.stringify(entry), PENDING_TTL_SECONDS);
 }
 
-function saveFromCallback_(cq, chatId, messageId, pid, payment) {
+function setMethod_(entry, method) {
+  entry.payment = method ? method.payment : '';
+  entry.app = method ? method.app : '';
+  entry.method = method ? method.label : '';
+}
+
+/** Applies one tap to the pending entry and re-renders the same message with the new state. */
+function editPending_(cq, chatId, messageId, pid, mutate) {
   var entry = getPending_(pid);
   if (!entry) {
     answerCallbackQuery(cq.id, 'This entry expired, please send it again.');
     return;
   }
-  entry.payment = payment;
+  var options = readOptions();
+  mutate(entry, options);
+  putPending_(pid, entry);
+  editMessageText(chatId, messageId, previewText_(entry), entryKeyboard_(pid, entry, options));
+  answerCallbackQuery(cq.id);
+}
+
+function saveFromCallback_(cq, chatId, messageId, pid) {
+  var entry = getPending_(pid);
+  if (!entry) {
+    answerCallbackQuery(cq.id, 'This entry expired, please send it again.');
+    return;
+  }
   appendEntry(entry);
   CacheService.getScriptCache().remove('pending_' + pid);
+  // Salary landing in an account shouldn't change which account/app spending defaults to.
+  if (entry.type !== 'Income') setLastPayment(entry.account, entry.method);
 
   editMessageText(chatId, messageId,
-    'Saved ✓ · ' + entry.type + ' · ' + entry.category + ' · ₹' + entry.amount +
+    'Saved ✓ · ' + entry.type + ' · ' + escapeHtml_(entry.category) + ' · ₹' + entry.amount +
+    '\n' + entryOwnerLine_(entry) +
     '\nToday: ' + formatSummary_(summaryForToday()) +
     '\nMonth: ' + formatSummary_(summaryForMonth()));
   answerCallbackQuery(cq.id, 'Saved');
@@ -165,56 +214,72 @@ function showCategoryChooser_(cq, chatId, messageId, pid) {
     answerCallbackQuery(cq.id, 'This entry expired, please send it again.');
     return;
   }
-  var categories = getCategoryNames(entry.type);
-  editMessageText(chatId, messageId, 'Choose a category for: ' + entry.description, categoryKeyboard_(pid, categories));
+  var categories = getSelectableCategories(entry.type);
+  editMessageText(chatId, messageId, 'Choose a category for: ' + escapeHtml_(entry.description), categoryKeyboard_(pid, categories));
   answerCallbackQuery(cq.id);
 }
 
-function setCategoryFromCallback_(cq, chatId, messageId, pid, index) {
-  var entry = getPending_(pid);
-  if (!entry) {
-    answerCallbackQuery(cq.id, 'This entry expired, please send it again.');
-    return;
-  }
-  var categories = getCategoryNames(entry.type);
-  entry.category = categories[index] || entry.category;
-  putPending_(pid, entry);
-  editMessageText(chatId, messageId, previewText_(entry), paymentKeyboard_(pid));
-  answerCallbackQuery(cq.id, 'Category set to ' + entry.category);
+function escapeHtml_(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function backToPreview_(cq, chatId, messageId, pid) {
-  var entry = getPending_(pid);
-  if (!entry) {
-    answerCallbackQuery(cq.id, 'This entry expired, please send it again.');
-    return;
-  }
-  editMessageText(chatId, messageId, previewText_(entry), paymentKeyboard_(pid));
-  answerCallbackQuery(cq.id);
+function entryOwnerLine_(entry) {
+  var direction = entry.type === 'Income' ? 'Into' : 'From';
+  var account = entry.account ? escapeHtml_(entry.account) + (entry.method ? ' · ' + escapeHtml_(entry.method) : '') : '—';
+  return direction + ': ' + account + '   For: ' + escapeHtml_(entry.forWho);
 }
 
 function previewText_(entry) {
-  var sign = entry.type === 'Expense' ? '−' : '+';
-  var desc = entry.description ? ' (' + entry.description + ')' : '';
-  return sign + '₹' + entry.amount + ' · ' + entry.type + ' · ' + entry.category + desc;
+  var sign = entry.type === 'Income' ? '+' : '−';
+  var lines = [sign + '₹' + entry.amount + ' · ' + entry.type + ' · ' + escapeHtml_(entry.category)];
+  if (entry.description) lines.push(escapeHtml_(entry.description));
+  lines.push(entryOwnerLine_(entry));
+  return lines.join('\n');
 }
 
-function paymentKeyboard_(pid) {
-  var otherMethods = PAYMENT_METHODS.filter(function (m) { return m !== 'UPI'; });
-  var otherButtons = otherMethods.map(function (m) { return { text: m, data: 's:' + pid + ':' + m }; });
-  return inlineKeyboard([
-    [{ text: '✓ Save (UPI)', data: 's:' + pid + ':UPI' }, { text: 'Change category', data: 'c:' + pid }],
-    otherButtons
-  ]);
+function chunk_(items, size) {
+  var rows = [];
+  for (var i = 0; i < items.length; i += size) rows.push(items.slice(i, i + size));
+  return rows;
+}
+
+/**
+ * One screen for the whole entry: tap a name to change it, ● marks the current choice.
+ * Save, Category, every account, the methods of the chosen account, and every person.
+ */
+function entryKeyboard_(pid, entry, options) {
+  var mark = function (selected, label) { return (selected ? '● ' : '') + label; };
+  var rows = [[
+    { text: '✓ Save', data: 's:' + pid },
+    { text: 'Category: ' + entry.category, data: 'c:' + pid }
+  ]];
+
+  var accountButtons = options.accounts.map(function (a, i) {
+    return { text: mark(a.name === entry.account, a.name), data: 'a:' + pid + ':' + i };
+  });
+  chunk_(accountButtons, 3).forEach(function (r) { rows.push(r); });
+
+  var account = findByName_(options.accounts, entry.account);
+  if (account && account.methods.length > 1) {
+    rows.push(account.methods.map(function (m, i) {
+      return { text: mark(m.label === entry.method, m.label), data: 'p:' + pid + ':' + i };
+    }));
+  }
+
+  var personButtons = options.people.map(function (p, i) {
+    return { text: mark(p.name === entry.forWho, p.name), data: 'f:' + pid + ':' + i };
+  });
+  chunk_(personButtons, 3).forEach(function (r) { rows.push(r); });
+
+  return inlineKeyboard(rows);
 }
 
 function categoryKeyboard_(pid, categories) {
-  var rows = [];
-  for (var i = 0; i < categories.length; i += 2) {
-    var row = [{ text: categories[i], data: 'sc:' + pid + ':' + i }];
-    if (categories[i + 1]) row.push({ text: categories[i + 1], data: 'sc:' + pid + ':' + (i + 1) });
-    rows.push(row);
-  }
+  var buttons = categories.map(function (c, i) {
+    return { text: c.category, data: 'sc:' + pid + ':' + i };
+  });
+  var rows = chunk_(buttons, 2);
   rows.push([{ text: '‹ Back', data: 'b:' + pid }]);
   return inlineKeyboard(rows);
 }
@@ -232,6 +297,8 @@ function helpText_() {
   return 'Send an amount and a description to log it:\n' +
     '  <b>60 snacks</b> → expense\n' +
     '  <b>+50000 salary</b> → income\n' +
+    '  <b>12000 credit card bill</b> → transfer (not counted as spending)\n' +
+    'Add words from your Options tab to skip the taps, e.g. <b>250 gift partner gpay</b>.\n' +
     'Shorthand: ₹, rs, and k (e.g. <b>1.2k rent</b>) all work.\n\n' +
     'Commands: /today /month /undo /help';
 }

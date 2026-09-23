@@ -11,7 +11,7 @@ var INR_FORMAT = '₹#,##0';
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Finance Tracker')
-    .addItem('Run setup (Ledger / Categories / Dashboard)', 'setupSpreadsheet')
+    .addItem('Run setup (Ledger / Categories / Options / Dashboard)', 'setupSpreadsheet')
     .addItem('Start Telegram polling', 'setupPolling')
     .addToUi();
 }
@@ -20,6 +20,7 @@ function setupSpreadsheet() {
   var ss = SpreadsheetApp.getActive();
   setupLedgerSheet_(ss);
   setupCategoriesSheet_(ss);
+  setupOptionsSheet_(ss);
   setupDashboardSheet_(ss);
 
   var defaultSheet = ss.getSheetByName('Sheet1');
@@ -33,22 +34,23 @@ function setupSpreadsheet() {
 
 function setupLedgerSheet_(ss) {
   var sheet = ss.getSheetByName(LEDGER_SHEET_NAME) || ss.insertSheet(LEDGER_SHEET_NAME);
-  var isNewOrEmpty = sheet.getLastRow() === 0;
 
-  // Only clear when the sheet is brand new - never wipe existing rows on a re-run.
-  if (isNewOrEmpty) {
-    sheet.getRange(1, 1, 1, LEDGER_HEADERS.length).setValues([LEDGER_HEADERS]).setFontWeight('bold');
-  }
+  // Fill only header cells that are empty, so a re-run adds newly introduced columns
+  // (Account / For / App) without touching existing headers or any logged rows.
+  var headerRange = sheet.getRange(1, 1, 1, LEDGER_HEADERS.length);
+  var existing = headerRange.getValues()[0];
+  var merged = LEDGER_HEADERS.map(function (h, i) { return existing[i] || h; });
+  headerRange.setValues([merged]).setFontWeight('bold');
+
   sheet.setFrozenRows(1);
   sheet.getRange('B:C').setNumberFormat('yyyy-mm-dd hh:mm');
   sheet.getRange('F:F').setNumberFormat(INR_FORMAT);
 
-  // Re-applying validation is always safe (it doesn't touch existing cell values) and
-  // is how a newly added payment method like Zaggle reaches a sheet that already has data.
-  var typeRule = SpreadsheetApp.newDataValidation().requireValueInList(['Expense', 'Income']).build();
+  // Re-applying validation never touches existing cell values.
+  var typeRule = SpreadsheetApp.newDataValidation().requireValueInList(['Expense', 'Income', 'Transfer']).build();
   sheet.getRange('D2:D').setDataValidation(typeRule);
-  var paymentRule = SpreadsheetApp.newDataValidation().requireValueInList(PAYMENT_METHODS).build();
-  sheet.getRange('H2:H').setDataValidation(paymentRule);
+  // Payment values now come from the Options tab, so a fixed list would only get in the way.
+  sheet.getRange('H2:H').clearDataValidations();
 
   sheet.autoResizeColumns(1, LEDGER_HEADERS.length);
 }
@@ -82,6 +84,27 @@ function setupCategoriesSheet_(ss) {
   sheet.autoResizeColumns(1, headers.length);
 }
 
+function setupOptionsSheet_(ss) {
+  var sheet = ss.getSheetByName(OPTIONS_SHEET_NAME) || ss.insertSheet(OPTIONS_SHEET_NAME);
+  if (sheet.getLastRow() === 0) {
+    // src/LocalOptions.js is a gitignored file holding your real account/people names;
+    // without it the generic DEFAULT_OPTIONS from Parser.js are used. Either way this only
+    // seeds an empty tab - afterwards the sheet is the source of truth.
+    var seed = (typeof LOCAL_OPTIONS !== 'undefined') ? LOCAL_OPTIONS : DEFAULT_OPTIONS;
+    var headers = ['Kind', 'Name', 'Methods', 'Aliases'];
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    sheet.getRange(2, 1, seed.length, headers.length).setValues(seed);
+  }
+  sheet.getRange('A1').setNote('Account or Person. The first Person is the default "For".');
+  sheet.getRange('C1').setNote('Accounts only. Comma-separated ways to pay from it. "UPI:GPay" = UPI via the GPay app; anything else (Card, Cash, ...) is a plain method.');
+  sheet.getRange('D1').setNote('Short words you can type inside a message to pick this row without tapping, e.g. "250 gift partner gpay". The first Person never needs one.');
+  sheet.setFrozenRows(1);
+  sheet.autoResizeColumns(1, 4);
+}
+
+var MONTH_START = '(EOMONTH(TODAY(),-1)+1)';
+var BLOCK_ROWS = 17; // vertical space reserved per table + chart
+
 function setupDashboardSheet_(ss) {
   var sheet = ss.getSheetByName('Dashboard') || ss.insertSheet('Dashboard');
   sheet.clear();
@@ -91,27 +114,41 @@ function setupDashboardSheet_(ss) {
   sheet.getRange('A2').setValue('Updated: ' + new Date().toLocaleString());
 
   writeTiles_(sheet);
-  var monthlyStartRow = 8;
-  writeMonthlyTable_(sheet, monthlyStartRow);
-  var categoryStartRow = monthlyStartRow + 16;
-  writeCategoryTable_(ss, sheet, categoryStartRow);
-  var recentStartRow = categoryStartRow + 14;
-  writeRecentEntries_(sheet, recentStartRow);
 
-  sheet.autoResizeColumns(1, 6);
+  var options = readOptions();
+  var apps = [];
+  options.accounts.forEach(function (a) {
+    a.methods.forEach(function (m) { if (m.app && apps.indexOf(m.app) === -1) apps.push(m.app); });
+  });
+  var expenseCategories = readCategories()
+    .filter(function (c) { return c.type === 'Expense'; })
+    .map(function (c) { return c.category; });
+
+  var row = 10;
+  writeMonthlyTable_(sheet, row);
+  row += BLOCK_ROWS;
+  writeBreakdown_(sheet, row, 'This Month by Category (Expenses)', expenseCategories, 'E', Charts.ChartType.PIE);
+  row += BLOCK_ROWS;
+  writeBreakdown_(sheet, row, 'This Month by Account (Expenses)', options.accounts.map(function (a) { return a.name; }), 'J', Charts.ChartType.COLUMN);
+  row += BLOCK_ROWS;
+  writeBreakdown_(sheet, row, 'This Month by Person (Expenses)', options.people.map(function (p) { return p.name; }), 'K', Charts.ChartType.PIE);
+  row += BLOCK_ROWS;
+  writeBreakdown_(sheet, row, 'This Month by UPI App (Expenses)', apps, 'L', Charts.ChartType.COLUMN);
+  row += BLOCK_ROWS;
+  writeRecentEntries_(sheet, row);
+
+  sheet.autoResizeColumns(1, 5);
 }
 
 function writeTiles_(sheet) {
-  var labels = ['This Month Income', 'This Month Expense', 'Net', 'Savings Rate'];
-  var formulas = [
-    '=SUMIFS(Ledger!F:F, Ledger!C:C, ">="&EOMONTH(TODAY(),-1)+1, Ledger!F:F, ">0")',
-    '=SUMIFS(Ledger!F:F, Ledger!C:C, ">="&EOMONTH(TODAY(),-1)+1, Ledger!F:F, "<0")',
-    '=B4+B5',
-    '=IFERROR(B6/B4, 0)'
-  ];
-  sheet.getRange('A4:A7').setValues(labels.map(function (l) { return [l]; })).setFontWeight('bold');
-  sheet.getRange('B4:B6').setFormulas([[formulas[0]], [formulas[1]], [formulas[2]]]).setNumberFormat(INR_FORMAT);
-  sheet.getRange('B7').setFormula(formulas[3]).setNumberFormat('0.0%');
+  var labels = ['This Month Income', 'This Month Expense', 'Net', 'Savings Rate', 'Transfers Out (bills, SIPs, savings)'];
+  var byType = function (type, sign) {
+    return '=' + sign + 'SUMIFS(Ledger!F:F, Ledger!C:C, ">="&' + MONTH_START + ', Ledger!D:D, "' + type + '")';
+  };
+  sheet.getRange('A4:A8').setValues(labels.map(function (l) { return [l]; })).setFontWeight('bold');
+  sheet.getRange('B4:B6').setFormulas([[byType('Income', '')], [byType('Expense', '')], ['=B4+B5']]).setNumberFormat(INR_FORMAT);
+  sheet.getRange('B7').setFormula('=IFERROR(B6/B4, 0)').setNumberFormat('0.0%');
+  sheet.getRange('B8').setFormula(byType('Transfer', '-')).setNumberFormat(INR_FORMAT);
 }
 
 function writeMonthlyTable_(sheet, startRow) {
@@ -122,51 +159,58 @@ function writeMonthlyTable_(sheet, startRow) {
   var rows = [];
   for (var i = 11; i >= 0; i--) {
     var r = headerRow + 1 + (11 - i);
-    var monthStart = '(EOMONTH(TODAY(),-' + (i + 1) + ')+1)';
-    var monthEnd = 'EOMONTH(TODAY(),-' + i + ')';
-    var monthLabel = '=TEXT(' + monthStart + ',"mmm yyyy")';
-    var income = '=SUMIFS(Ledger!F:F, Ledger!C:C, ">="&' + monthStart + ', Ledger!C:C, "<="&' + monthEnd + ', Ledger!F:F, ">0")';
-    var expense = '=SUMIFS(Ledger!F:F, Ledger!C:C, ">="&' + monthStart + ', Ledger!C:C, "<="&' + monthEnd + ', Ledger!F:F, "<0")';
-    var cumulative = (11 - i === 0)
-      ? '=B' + r + '+C' + r
-      : '=D' + (r - 1) + '+B' + r + '+C' + r;
-    rows.push([monthLabel, income, expense, cumulative]);
+    var from = '(EOMONTH(TODAY(),-' + (i + 1) + ')+1)';
+    var before = '(EOMONTH(TODAY(),-' + i + ')+1)'; // exclusive, so entries with a time on the last day count
+    var inMonth = 'Ledger!C:C, ">="&' + from + ', Ledger!C:C, "<"&' + before;
+    rows.push([
+      '=TEXT(' + from + ',"mmm yyyy")',
+      '=SUMIFS(Ledger!F:F, ' + inMonth + ', Ledger!D:D, "Income")',
+      '=SUMIFS(Ledger!F:F, ' + inMonth + ', Ledger!D:D, "Expense")',
+      (11 - i === 0) ? '=B' + r + '+C' + r : '=D' + (r - 1) + '+B' + r + '+C' + r
+    ]);
   }
-  var range = sheet.getRange(headerRow + 1, 1, rows.length, 4);
-  range.setFormulas(rows);
+  sheet.getRange(headerRow + 1, 1, rows.length, 4).setFormulas(rows);
   sheet.getRange(headerRow + 1, 2, rows.length, 3).setNumberFormat(INR_FORMAT);
 
-  var dataRange = sheet.getRange(headerRow, 1, rows.length + 1, 4);
   var chart = sheet.newChart()
     .setChartType(Charts.ChartType.COLUMN)
-    .addRange(dataRange)
+    .addRange(sheet.getRange(headerRow, 1, rows.length + 1, 4))
     .setPosition(headerRow, 6, 0, 0)
     .setOption('title', 'Income vs Expense by Month')
     .setOption('series', { 2: { type: 'line', targetAxisIndex: 1 } })
     .setOption('vAxes', { 0: { title: 'Income / Expense' }, 1: { title: 'Cumulative Net' } })
+    .setOption('height', 300)
     .build();
   sheet.insertChart(chart);
 }
 
-function writeCategoryTable_(ss, sheet, startRow) {
-  sheet.getRange(startRow, 1).setValue('This Month by Category (Expenses)').setFontWeight('bold');
+/**
+ * This month's expenses grouped by one Ledger column (`ledgerCol`), one row per label plus a
+ * last row for whatever isn't covered (old entries logged before the column existed, or a
+ * renamed option), so the table always adds up to the Expense tile. Transfers are excluded.
+ */
+function writeBreakdown_(sheet, startRow, title, labels, ledgerCol, chartType) {
+  sheet.getRange(startRow, 1).setValue(title).setFontWeight('bold');
   var headerRow = startRow + 1;
-  sheet.getRange(headerRow, 1, 1, 2).setValues([['Category', 'Amount']]).setFontWeight('bold');
+  sheet.getRange(headerRow, 1, 1, 2).setValues([['', 'Amount']]).setFontWeight('bold');
 
-  var expenseCategories = readCategories().filter(function (c) { return c.type === 'Expense'; });
-  var rows = expenseCategories.map(function (c) {
-    var formula = '=-SUMIFS(Ledger!F:F, Ledger!C:C, ">="&EOMONTH(TODAY(),-1)+1, Ledger!E:E, "' + c.category + '")';
-    return [c.category, formula];
+  var first = headerRow + 1;
+  var rows = labels.map(function (label, i) {
+    var r = first + i;
+    return [label, '=-SUMIFS(Ledger!F:F, Ledger!C:C, ">="&' + MONTH_START + ', Ledger!D:D, "Expense", Ledger!' + ledgerCol + ':' + ledgerCol + ', $A' + r + ')'];
   });
-  sheet.getRange(headerRow + 1, 1, rows.length, 2).setValues(rows);
-  sheet.getRange(headerRow + 1, 2, rows.length, 1).setNumberFormat(INR_FORMAT);
+  var last = first + rows.length - 1;
+  rows.push(['(not assigned)', '=-$B$5' + (rows.length ? '-SUM(B' + first + ':B' + last + ')' : '')]);
 
-  var dataRange = sheet.getRange(headerRow, 1, rows.length + 1, 2);
+  sheet.getRange(first, 1, rows.length, 2).setValues(rows.map(function (r) { return [r[0], '']; }));
+  sheet.getRange(first, 2, rows.length, 1).setFormulas(rows.map(function (r) { return [r[1]]; })).setNumberFormat(INR_FORMAT);
+
   var chart = sheet.newChart()
-    .setChartType(Charts.ChartType.PIE)
-    .addRange(dataRange)
+    .setChartType(chartType)
+    .addRange(sheet.getRange(headerRow, 1, rows.length + 1, 2))
     .setPosition(headerRow, 6, 0, 0)
-    .setOption('title', 'This Month\'s Spend by Category')
+    .setOption('title', title)
+    .setOption('height', 300)
     .build();
   sheet.insertChart(chart);
 }
@@ -174,8 +218,9 @@ function writeCategoryTable_(ss, sheet, startRow) {
 function writeRecentEntries_(sheet, startRow) {
   sheet.getRange(startRow, 1).setValue('Last 10 Entries').setFontWeight('bold');
   var headerRow = startRow + 1;
-  sheet.getRange(headerRow, 1, 1, 5).setValues([['Date', 'Type', 'Category', 'Amount', 'Description']]).setFontWeight('bold');
-  var formula = '=IFERROR(QUERY(Ledger!A2:I,"select C,D,E,F,G order by B desc limit 10",0),"No entries yet")';
+  sheet.getRange(headerRow, 1, 1, 7).setValues([['Date', 'Type', 'Category', 'Amount', 'Description', 'Account', 'For']]).setFontWeight('bold');
+  var formula = '=IFERROR(QUERY(Ledger!A2:L,"select C,D,E,F,G,J,K order by B desc limit 10",0),"No entries yet")';
   sheet.getRange(headerRow + 1, 1).setFormula(formula);
+  sheet.getRange(headerRow + 1, 1, 10, 1).setNumberFormat('yyyy-mm-dd hh:mm');
   sheet.getRange(headerRow + 1, 4, 10, 1).setNumberFormat(INR_FORMAT);
 }

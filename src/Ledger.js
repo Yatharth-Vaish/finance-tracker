@@ -4,8 +4,9 @@
 
 var LEDGER_SHEET_NAME = 'Ledger';
 var CATEGORIES_SHEET_NAME = 'Categories';
-var LEDGER_HEADERS = ['ID', 'Timestamp', 'Date', 'Type', 'Category', 'Amount', 'Description', 'Payment', 'Raw'];
-var PAYMENT_METHODS = ['UPI', 'Cash', 'Card', 'Bank', 'Zaggle'];
+var OPTIONS_SHEET_NAME = 'Options';
+// New columns are only ever appended on the right so existing rows and formulas keep their letters.
+var LEDGER_HEADERS = ['ID', 'Timestamp', 'Date', 'Type', 'Category', 'Amount', 'Description', 'Payment', 'Raw', 'Account', 'For', 'App'];
 
 function getLedgerSheet_() {
   var sheet = SpreadsheetApp.getActive().getSheetByName(LEDGER_SHEET_NAME);
@@ -17,6 +18,29 @@ function getCategoriesSheet_() {
   var sheet = SpreadsheetApp.getActive().getSheetByName(CATEGORIES_SHEET_NAME);
   if (!sheet) throw new Error('Categories sheet not found. Run setupSpreadsheet() first.');
   return sheet;
+}
+
+function getOptionsSheet_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName(OPTIONS_SHEET_NAME);
+  if (!sheet) throw new Error('Options sheet not found. Run setupSpreadsheet() first.');
+  return sheet;
+}
+
+/**
+ * Accounts/cards, the payment methods each supports, and the people you spend on.
+ * Edited by hand in the Options tab; see parseOptions() in Parser.js for the row format.
+ */
+function readOptions() {
+  return parseOptions(getOptionsSheet_().getDataRange().getValues().slice(1));
+}
+
+function getLastPayment() {
+  var raw = PropertiesService.getScriptProperties().getProperty('LAST_PAYMENT');
+  return raw ? JSON.parse(raw) : {};
+}
+
+function setLastPayment(account, method) {
+  PropertiesService.getScriptProperties().setProperty('LAST_PAYMENT', JSON.stringify({ account: account, method: method }));
 }
 
 /**
@@ -33,14 +57,21 @@ function readCategories() {
     });
 }
 
-function getCategoryNames(type) {
+/**
+ * Categories you can switch an entry to. Income entries only see income categories;
+ * everything else sees expense and transfer categories, so picking "Credit Card Bill"
+ * on a mis-guessed entry also flips it to a Transfer.
+ * @returns {Array<{type:string,category:string}>}
+ */
+function getSelectableCategories(entryType) {
+  var allowed = entryType === 'Income' ? ['Income'] : ['Expense', 'Transfer'];
   return readCategories()
-    .filter(function (c) { return c.type === type; })
-    .map(function (c) { return c.category; });
+    .filter(function (c) { return allowed.indexOf(c.type) !== -1; })
+    .map(function (c) { return { type: c.type, category: c.category }; });
 }
 
 /**
- * @param {{type:string, amount:number, category:string, description:string, payment:string, raw:string}} entry
+ * @param {{type:string, amount:number, category:string, description:string, payment:string, raw:string, account:string, forWho:string, app:string}} entry
  * @returns {string} the generated row ID
  */
 function appendEntry(entry) {
@@ -50,7 +81,7 @@ function appendEntry(entry) {
     var sheet = getLedgerSheet_();
     var id = Utilities.getUuid();
     var now = new Date();
-    var signedAmount = entry.type === 'Expense' ? -Math.abs(entry.amount) : Math.abs(entry.amount);
+    var signedAmount = entry.type === 'Income' ? Math.abs(entry.amount) : -Math.abs(entry.amount);
     sheet.appendRow([
       id,
       now,
@@ -59,8 +90,11 @@ function appendEntry(entry) {
       entry.category,
       signedAmount,
       entry.description,
-      entry.payment || 'UPI',
-      entry.raw
+      entry.payment || '',
+      entry.raw,
+      entry.account || '',
+      entry.forWho || '',
+      entry.app || ''
     ]);
     return id;
   } finally {
@@ -97,10 +131,12 @@ function sumAmountsSince_(sinceDate) {
   var income = 0, expense = 0;
   data.forEach(function (row) {
     var date = row[2];
+    var type = row[3];
     var amount = row[5];
     if (!(date instanceof Date) || date < sinceDate) return;
-    if (amount > 0) income += amount;
-    else expense += amount;
+    // Transfers (card bills, SIPs, moves between own accounts) are neither income nor spend.
+    if (type === 'Income') income += amount;
+    else if (type === 'Expense') expense += amount;
   });
   return { income: income, expense: expense, net: income + expense };
 }

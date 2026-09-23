@@ -19,11 +19,22 @@ Telegram bot → Google Sheets cash flow ledger, running entirely on Google Apps
 - Real secrets (`BOT_TOKEN`, `ALLOWED_CHAT_ID`) live in Apps Script's Script Properties, set
   through the Apps Script editor UI — never in this repo.
 
+## Privacy (important)
+
+This repo is public. Real bank/card/person names must never be committed - not in code,
+tests, README examples or commit messages. They live in the private Sheet's `Options` tab,
+seeded from `src/LocalOptions.js`, which is gitignored (but still pushed to Apps Script by
+clasp). `DEFAULT_OPTIONS` in `Parser.js` and every test fixture must stay generic. Before
+any `git push`, grep the staged diff for real account/bank/person names.
+
 ## Conventions
 
-- Ledger amounts are **signed**: expenses negative, income positive. Cash flow = `SUM()`.
-  Don't reintroduce a separate income/expense split across sheets — the whole point of one
-  signed column is that Dashboard formulas stay one `SUMIFS` each.
+- Ledger amounts are **signed**: expenses and transfers negative, income positive. Income
+  and spending totals are computed by the `Type` column (`Income` / `Expense`), never by the
+  sign of the amount - `Transfer` rows (card bills, SIPs, own-account moves) must stay out of
+  both. Don't reintroduce a separate income/expense split across sheets.
+- Ledger columns are only ever appended on the right (`Account`, `For`, `App` after `Raw`) so
+  existing rows and formula column letters never shift; setup fills missing headers only.
 - Categories (with their keyword lists for auto-guessing) live in the `Categories` sheet
   tab, not hardcoded in `Main.js`. `Parser.js` exports `DEFAULT_CATEGORIES` as the seed data
   that `Setup.js` writes on first run; after that, the sheet is the source of truth and

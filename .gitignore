@@ -2,3 +2,4 @@ node_modules/
 .clasprc.json
 .clasp.json
 *.log
+src/LocalOptions.js
