@@ -65,3 +65,10 @@ test('an unrecognized income description falls back to Other Income', () => {
   assert.equal(r.type, 'Income');
   assert.equal(r.category, 'Other Income');
 });
+
+test('"+8800 zaggle allowance" is categorized as Zaggle Allowance income', () => {
+  const r = parseEntry('+8800 zaggle allowance');
+  assert.equal(r.type, 'Income');
+  assert.equal(r.amount, 8800);
+  assert.equal(r.category, 'Zaggle Allowance');
+});

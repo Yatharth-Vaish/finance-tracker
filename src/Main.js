@@ -200,9 +200,11 @@ function previewText_(entry) {
 }
 
 function paymentKeyboard_(pid) {
+  var otherMethods = PAYMENT_METHODS.filter(function (m) { return m !== 'UPI'; });
+  var otherButtons = otherMethods.map(function (m) { return { text: m, data: 's:' + pid + ':' + m }; });
   return inlineKeyboard([
     [{ text: '✓ Save (UPI)', data: 's:' + pid + ':UPI' }, { text: 'Change category', data: 'c:' + pid }],
-    [{ text: 'Cash', data: 's:' + pid + ':Cash' }, { text: 'Card', data: 's:' + pid + ':Card' }, { text: 'Bank', data: 's:' + pid + ':Bank' }]
+    otherButtons
   ]);
 }
 

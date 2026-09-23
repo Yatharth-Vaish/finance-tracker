@@ -5,6 +5,7 @@
 var LEDGER_SHEET_NAME = 'Ledger';
 var CATEGORIES_SHEET_NAME = 'Categories';
 var LEDGER_HEADERS = ['ID', 'Timestamp', 'Date', 'Type', 'Category', 'Amount', 'Description', 'Payment', 'Raw'];
+var PAYMENT_METHODS = ['UPI', 'Cash', 'Card', 'Bank', 'Zaggle'];
 
 function getLedgerSheet_() {
   var sheet = SpreadsheetApp.getActive().getSheetByName(LEDGER_SHEET_NAME);

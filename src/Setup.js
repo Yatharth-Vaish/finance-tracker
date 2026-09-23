@@ -1,7 +1,9 @@
 /**
  * One-time (and re-runnable) setup: builds the Ledger, Categories and Dashboard tabs.
  * Run setupSpreadsheet() once from the Apps Script editor after the first `clasp push`,
- * and again any time you want to reset the Dashboard formulas/charts.
+ * and again any time you add a category/payment method in code or want to reset the
+ * Dashboard formulas/charts. Re-running is safe: it never deletes existing Ledger rows
+ * or Categories you've added by hand - it only adds what's missing.
  */
 
 var INR_FORMAT = '₹#,##0';
@@ -31,15 +33,21 @@ function setupSpreadsheet() {
 
 function setupLedgerSheet_(ss) {
   var sheet = ss.getSheetByName(LEDGER_SHEET_NAME) || ss.insertSheet(LEDGER_SHEET_NAME);
-  sheet.clear();
-  sheet.getRange(1, 1, 1, LEDGER_HEADERS.length).setValues([LEDGER_HEADERS]).setFontWeight('bold');
+  var isNewOrEmpty = sheet.getLastRow() === 0;
+
+  // Only clear when the sheet is brand new - never wipe existing rows on a re-run.
+  if (isNewOrEmpty) {
+    sheet.getRange(1, 1, 1, LEDGER_HEADERS.length).setValues([LEDGER_HEADERS]).setFontWeight('bold');
+  }
   sheet.setFrozenRows(1);
   sheet.getRange('B:C').setNumberFormat('yyyy-mm-dd hh:mm');
   sheet.getRange('F:F').setNumberFormat(INR_FORMAT);
 
+  // Re-applying validation is always safe (it doesn't touch existing cell values) and
+  // is how a newly added payment method like Zaggle reaches a sheet that already has data.
   var typeRule = SpreadsheetApp.newDataValidation().requireValueInList(['Expense', 'Income']).build();
   sheet.getRange('D2:D').setDataValidation(typeRule);
-  var paymentRule = SpreadsheetApp.newDataValidation().requireValueInList(['UPI', 'Cash', 'Card', 'Bank']).build();
+  var paymentRule = SpreadsheetApp.newDataValidation().requireValueInList(PAYMENT_METHODS).build();
   sheet.getRange('H2:H').setDataValidation(paymentRule);
 
   sheet.autoResizeColumns(1, LEDGER_HEADERS.length);
@@ -47,11 +55,29 @@ function setupLedgerSheet_(ss) {
 
 function setupCategoriesSheet_(ss) {
   var sheet = ss.getSheetByName(CATEGORIES_SHEET_NAME) || ss.insertSheet(CATEGORIES_SHEET_NAME);
-  sheet.clear();
   var headers = ['Type', 'Category', 'Keywords'];
-  var rows = DEFAULT_CATEGORIES.map(function (c) { return [c.type, c.category, c.keywords.join(', ')]; });
-  sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
-  sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+
+  if (sheet.getLastRow() === 0) {
+    var rows = DEFAULT_CATEGORIES.map(function (c) { return [c.type, c.category, c.keywords.join(', ')]; });
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  } else {
+    // Sheet already exists (possibly hand-edited) - only append DEFAULT_CATEGORIES
+    // entries that aren't already present, keyed by Type+Category. Never overwrite or
+    // remove rows the user added or edited themselves.
+    var existing = readCategories();
+    var existingKeys = {};
+    existing.forEach(function (c) { existingKeys[c.type + '\u0001' + c.category] = true; });
+
+    var missing = DEFAULT_CATEGORIES.filter(function (c) {
+      return !existingKeys[c.type + '\u0001' + c.category];
+    });
+    if (missing.length > 0) {
+      var newRows = missing.map(function (c) { return [c.type, c.category, c.keywords.join(', ')]; });
+      sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, headers.length).setValues(newRows);
+    }
+  }
+
   sheet.setFrozenRows(1);
   sheet.autoResizeColumns(1, headers.length);
 }

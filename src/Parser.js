@@ -15,7 +15,8 @@ var DEFAULT_CATEGORIES = [
   { type: 'Expense', category: 'Subscriptions', keywords: ['netflix', 'spotify', 'prime', 'hotstar', 'subscription', 'youtube premium'] },
   { type: 'Expense', category: 'Other', keywords: [] },
   { type: 'Income', category: 'Salary', keywords: ['salary', 'payroll'] },
-  { type: 'Income', category: 'Trading/IPO', keywords: ['trading', 'stocks', 'ipo', 'dividend', 'mutual fund', 'mf'] },
+  { type: 'Income', category: 'Trading/IPO', keywords: ['trading', 'stocks', 'ipo', 'dividend', 'listing gain', 'mutual fund', 'mf'] },
+  { type: 'Income', category: 'Zaggle Allowance', keywords: ['zaggle', 'meal card', 'meal allowance', 'food allowance'] },
   { type: 'Income', category: 'Interest', keywords: ['interest', 'fd', 'savings interest'] },
   { type: 'Income', category: 'Refund', keywords: ['refund', 'cashback', 'reimbursement'] },
   { type: 'Income', category: 'Other Income', keywords: [] }
