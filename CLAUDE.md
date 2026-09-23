@@ -12,8 +12,10 @@ Telegram bot → Google Sheets cash flow ledger, running entirely on Google Apps
   Every other `src/*.js` file depends on `SpreadsheetApp`, `UrlFetchApp`, `PropertiesService`,
   `CacheService`, etc., which only exist inside the Apps Script runtime — don't try to unit
   test those directly; changes to them are verified by running the bot for real (see README).
-- `.clasp.json` holds the bound script's `scriptId` and `rootDir: "src"`. It has no secrets
-  and is committed.
+- `.clasp.json` holds the bound script's `scriptId` and `rootDir: "src"`. It's gitignored
+  (see `.clasp.json.example`) — the real one points at this specific Google account's own
+  script/Sheet, and committing it would let anyone who clones the repo without reading the
+  README accidentally push to that live script.
 - Real secrets (`BOT_TOKEN`, `ALLOWED_CHAT_ID`) live in Apps Script's Script Properties, set
   through the Apps Script editor UI — never in this repo.
 
