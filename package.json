@@ -1,0 +1,12 @@
+{
+  "name": "finance-tracker",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Telegram bot -> Google Sheets cash flow ledger, running on Apps Script.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  }
+}
