@@ -127,6 +127,8 @@ function setupDashboardSheet_(ss) {
   var row = 10;
   writeMonthlyTable_(sheet, row);
   row += BLOCK_ROWS;
+  writeIncomeAllocationChart_(sheet, row);
+  row += BLOCK_ROWS;
   writeBreakdown_(sheet, row, 'This Month by Category (Expenses)', expenseCategories, 'E', Charts.ChartType.PIE);
   row += BLOCK_ROWS;
   writeBreakdown_(sheet, row, 'This Month by Account (Expenses)', options.accounts.map(function (a) { return a.name; }), 'J', Charts.ChartType.COLUMN);
@@ -172,13 +174,56 @@ function writeMonthlyTable_(sheet, startRow) {
   sheet.getRange(headerRow + 1, 1, rows.length, 4).setFormulas(rows);
   sheet.getRange(headerRow + 1, 2, rows.length, 3).setNumberFormat(INR_FORMAT);
 
+  // Only Month/Income/Expense are charted (Cumulative Net stays a table column, not a
+  // series) - a third mixed-scale line was what made the legend colors hard to read.
   var chart = sheet.newChart()
     .setChartType(Charts.ChartType.COLUMN)
-    .addRange(sheet.getRange(headerRow, 1, rows.length + 1, 4))
+    .addRange(sheet.getRange(headerRow, 1, rows.length + 1, 3))
     .setPosition(headerRow, 6, 0, 0)
     .setOption('title', 'Income vs Expense by Month')
-    .setOption('series', { 2: { type: 'line', targetAxisIndex: 1 } })
-    .setOption('vAxes', { 0: { title: 'Income / Expense' }, 1: { title: 'Cumulative Net' } })
+    .setOption('legend', { position: 'top', textStyle: { fontSize: 12 } })
+    .setOption('colors', ['#34A853', '#EA4335']) // green = Income, red = Expense
+    .setOption('hAxis', { title: 'Month' })
+    .setOption('vAxis', { title: 'Amount (₹)' })
+    .setOption('height', 300)
+    .build();
+  sheet.insertChart(chart);
+}
+
+/**
+ * Where this month's income actually went: spent, moved into bills/SIPs/savings
+ * (Transfers), or still sitting unspent. Mirrors the user's own mental model of their
+ * accounts (a fixed slice out to spending, a fixed slice to structured saving, the rest
+ * is free savings) rather than just re-showing the expense-category breakdown.
+ */
+function writeIncomeAllocationChart_(sheet, startRow) {
+  sheet.getRange(startRow, 1).setValue('This Month: Where Your Income Went').setFontWeight('bold');
+  var headerRow = startRow + 1;
+  sheet.getRange(headerRow, 1, 1, 2).setValues([['', 'Amount']]).setFontWeight('bold');
+
+  var expenseRow = headerRow + 1;
+  var transferRow = headerRow + 2;
+  var leftoverRow = headerRow + 3;
+
+  sheet.getRange(expenseRow, 1, 3, 1).setValues([
+    ['Spent (Expenses)'],
+    ['Moved to bills / SIPs / savings (Transfers)'],
+    ['Left over (unspent)']
+  ]);
+  // B4/B5/B8 are the This Month Income/Expense/Transfers-Out tiles from writeTiles_.
+  // Expense (B5) is stored negative; Transfers Out (B8) is already a positive magnitude.
+  sheet.getRange(expenseRow, 2).setFormula('=-B5');
+  sheet.getRange(transferRow, 2).setFormula('=B8');
+  sheet.getRange(leftoverRow, 2).setFormula('=MAX(0, B4-B' + expenseRow + '-B' + transferRow + ')');
+  sheet.getRange(expenseRow, 2, 3, 1).setNumberFormat(INR_FORMAT);
+
+  var chart = sheet.newChart()
+    .setChartType(Charts.ChartType.PIE)
+    .addRange(sheet.getRange(headerRow, 1, 4, 2))
+    .setPosition(headerRow, 6, 0, 0)
+    .setOption('title', 'This Month: Income Allocation')
+    .setOption('colors', ['#EA4335', '#FBBC04', '#34A853']) // red = spent, yellow = transfers, green = left over
+    .setOption('legend', { position: 'top', textStyle: { fontSize: 12 } })
     .setOption('height', 300)
     .build();
   sheet.insertChart(chart);
