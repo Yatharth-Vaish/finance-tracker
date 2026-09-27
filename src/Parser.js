@@ -19,6 +19,7 @@ var DEFAULT_CATEGORIES = [
   { type: 'Transfer', category: 'SIP / Investment', keywords: ['sip', 'invest', 'investment'] },
   { type: 'Transfer', category: 'Savings', keywords: ['savings', 'saving'] },
   { type: 'Transfer', category: 'Own Account Transfer', keywords: ['transfer'] },
+  { type: 'Transfer', category: 'Internal Conversion', keywords: ['zaggle back', 'sent back', 'converted', 'reimburse me', 'reimbursed me'] },
   { type: 'Income', category: 'Salary', keywords: ['salary', 'payroll'] },
   { type: 'Income', category: 'Trading/IPO', keywords: ['trading', 'stocks', 'ipo', 'dividend', 'listing gain', 'mutual fund', 'mf'] },
   { type: 'Income', category: 'Zaggle Allowance', keywords: ['zaggle', 'meal card', 'meal allowance', 'food allowance'] },
@@ -45,6 +46,10 @@ var DEFAULT_OPTIONS = [
 ];
 
 var AMOUNT_PATTERN = /(₹|rs\.?\s*)?(\d+(?:\.\d+)?)(k)?\b/i;
+// Cheap hardening of the regex fallback (the LLM path is the real fix for phrasing like
+// this): catches "sent to me" / "gave me" / "received" so at least the Type comes out
+// right even when the LLM is unavailable, rather than defaulting to Expense.
+var INCOME_PHRASE_PATTERN = /\b(sent|gave|paid|transferred)\b\s*(to\s+)?me\b|\breceived\b/i;
 
 function splitList_(value) {
   return String(value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
@@ -104,6 +109,8 @@ function parseEntry(text, categories, options) {
     working = working.replace(/^income\b/i, '').trim();
   } else if (/^expense\b/i.test(working)) {
     working = working.replace(/^expense\b/i, '').trim();
+  } else if (INCOME_PHRASE_PATTERN.test(working)) {
+    explicitIncome = true;
   }
 
   var match = AMOUNT_PATTERN.exec(working);
@@ -238,6 +245,62 @@ function guessCategory(type, description, categories) {
   return fallback ? fallback.category : 'Other';
 }
 
+var VALID_ENTRY_TYPES = ['Expense', 'Income', 'Transfer'];
+
+/**
+ * Validates and cleans a raw array of LLM-produced entries against the real categories
+ * and options lists before anything touches the Sheet. This is the safety net between
+ * "the model said so" and a written row: a hallucinated category degrades to a sane
+ * default instead of writing a category that doesn't exist, and an account/person name
+ * that doesn't exactly match a real one is cleared (never guessed) so applyDefaults()
+ * fills it in the same way a message that said nothing about it would.
+ * @param {Array<object>} rawEntries - parsed JSON from the LLM, untrusted shape
+ * @param {Array<{type:string,category:string,keywords:string[]}>} categories
+ * @param {ReturnType<typeof parseOptions>} options
+ * @returns {Array<{type:string,amount:number,category:string,description:string,raw:string,account:string,app:string,forWho:string}>}
+ *          Entries with no usable type or amount are dropped entirely; the array can be empty.
+ */
+function sanitizeLlmEntries(rawEntries, categories, options) {
+  if (!Array.isArray(rawEntries)) return [];
+  options = options || { accounts: [], people: [] };
+
+  var accountNames = {};
+  options.accounts.forEach(function (a) { accountNames[a.name.toLowerCase()] = a.name; });
+  var personNames = {};
+  options.people.forEach(function (p) { personNames[p.name.toLowerCase()] = p.name; });
+  var appNames = {};
+  options.accounts.forEach(function (a) {
+    a.methods.forEach(function (m) { if (m.app) appNames[m.app.toLowerCase()] = m.app; });
+  });
+
+  return rawEntries.map(function (raw) {
+    if (!raw || typeof raw !== 'object') return null;
+
+    var type = VALID_ENTRY_TYPES.indexOf(raw.type) !== -1 ? raw.type : null;
+    var amount = Math.abs(Number(raw.amount));
+    if (!type || !isFinite(amount) || amount <= 0) return null;
+
+    var candidateCategories = categories.filter(function (c) { return c.type === type; });
+    var categoryNames = candidateCategories.map(function (c) { return c.category; });
+    var category = categoryNames.indexOf(raw.category) !== -1 ? raw.category : null;
+    if (!category) {
+      var fallback = candidateCategories.find(function (c) { return (c.keywords || []).length === 0; });
+      category = fallback ? fallback.category : (categoryNames[0] || 'Other');
+    }
+
+    return {
+      type: type,
+      amount: amount,
+      category: category,
+      description: String(raw.description || '').trim(),
+      raw: '', // filled in by the caller with the original message text
+      account: accountNames[String(raw.account || '').toLowerCase()] || '',
+      app: appNames[String(raw.app || '').toLowerCase()] || '',
+      forWho: personNames[String(raw.forWho || '').toLowerCase()] || ''
+    };
+  }).filter(Boolean);
+}
+
 // Exposed to node's test runner. Apps Script has no `module`, so this is a no-op there.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
@@ -245,6 +308,7 @@ if (typeof module !== 'undefined' && module.exports) {
     parseOptions: parseOptions,
     applyDefaults: applyDefaults,
     guessCategory: guessCategory,
+    sanitizeLlmEntries: sanitizeLlmEntries,
     DEFAULT_CATEGORIES: DEFAULT_CATEGORIES,
     DEFAULT_OPTIONS: DEFAULT_OPTIONS
   };

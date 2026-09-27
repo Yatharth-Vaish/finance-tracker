@@ -5,7 +5,8 @@
  * and keeps retrying forever. So instead of a webhook, a time-driven trigger calls
  * pollUpdates() once a minute, which pulls new messages with getUpdates().
  *
- * Wires Parser.js (pure parsing) to Ledger.js (sheet I/O) and Telegram.js (bot API).
+ * Wires Parser.js (pure parsing) + Gemini.js (optional LLM parsing) to Ledger.js
+ * (sheet I/O) and Telegram.js (bot API).
  */
 
 var PENDING_TTL_SECONDS = 600; // 10 minutes
@@ -61,6 +62,22 @@ function isAllowedChat_(chatId) {
   return String(chatId) === String(allowed);
 }
 
+/**
+ * Tries Gemini first (if GEMINI_API_KEY is configured); falls back to the regex parser
+ * on any failure so the bot never goes silent just because the LLM is unavailable.
+ * @returns {Array<object>} zero or more sanitized, default-filled entries
+ */
+function parseMessageEntries_(text, categories, options) {
+  var entries = parseEntryLLM_(text, categories, options);
+  if (!entries) {
+    var single = parseEntry(text, categories, options);
+    entries = single ? [single] : [];
+  }
+  var lastPayment = getLastPayment();
+  entries.forEach(function (e) { applyDefaults(e, options, lastPayment); });
+  return entries;
+}
+
 function handleMessage_(message) {
   var chatId = message.chat.id;
   var text = (message.text || '').trim();
@@ -78,16 +95,28 @@ function handleMessage_(message) {
   }
 
   var options = readOptions();
-  var parsed = parseEntry(text, readCategories(), options);
-  if (!parsed) {
+  var entries = parseMessageEntries_(text, readCategories(), options);
+  if (entries.length === 0) {
     sendMessage(chatId, helpText_());
     return;
   }
-  applyDefaults(parsed, options, getLastPayment());
+
+  // Entries save immediately (fixes the ~1-2 min round trip a confirm-then-save flow
+  // cost): only one poll cycle is needed for the common case. Mistakes are fixed
+  // afterward via the buttons on the confirmation, or /undo, not before the save.
+  var ids = entries.map(function (e) { return appendEntry(e); });
+
+  var lastSpend = entries.slice().reverse().find(function (e) { return e.type !== 'Income'; });
+  if (lastSpend) setLastPayment(lastSpend.account, lastSpend.method);
 
   var pid = Utilities.getUuid().slice(0, 8);
-  putPending_(pid, parsed);
-  sendMessage(chatId, previewText_(parsed), entryKeyboard_(pid, parsed, options));
+  putSaved_(pid, ids, entries);
+
+  if (entries.length === 1) {
+    sendMessage(chatId, savedText_(entries[0]), entryKeyboard_(pid, entries[0], options));
+  } else {
+    sendMessage(chatId, savedMultiText_(entries), multiKeyboard_(pid));
+  }
 }
 
 function handleCommand_(chatId, text) {
@@ -115,37 +144,44 @@ function handleCallbackQuery_(cq) {
   var pid = parts[1];
   var index = Number(parts[2]);
 
-  if (action === 's') {
-    saveFromCallback_(cq, chatId, messageId, pid);
-  } else if (action === 'c') {
+  if (action === 'c') {
     showCategoryChooser_(cq, chatId, messageId, pid);
   } else if (action === 'sc') {
-    editPending_(cq, chatId, messageId, pid, function (entry) {
+    editSaved_(cq, chatId, messageId, pid, function (entry) {
       var picked = getSelectableCategories(entry.type)[index];
-      if (picked) {
-        entry.type = picked.type;
-        entry.category = picked.category;
-      }
+      if (!picked) return null;
+      entry.type = picked.type;
+      entry.category = picked.category;
+      return { type: picked.type, category: picked.category };
     });
   } else if (action === 'a') {
-    editPending_(cq, chatId, messageId, pid, function (entry, options) {
+    editSaved_(cq, chatId, messageId, pid, function (entry, options) {
       var account = options.accounts[index];
-      if (!account) return;
+      if (!account) return null;
       var method = account.methods.find(function (m) { return m.label === entry.method; }) || account.methods[0] || null;
       entry.account = account.name;
       setMethod_(entry, method);
+      return { account: entry.account, payment: entry.payment, app: entry.app };
     });
   } else if (action === 'p') {
-    editPending_(cq, chatId, messageId, pid, function (entry, options) {
+    editSaved_(cq, chatId, messageId, pid, function (entry, options) {
       var account = findByName_(options.accounts, entry.account);
-      if (account && account.methods[index]) setMethod_(entry, account.methods[index]);
+      if (!account || !account.methods[index]) return null;
+      setMethod_(entry, account.methods[index]);
+      return { payment: entry.payment, app: entry.app };
     });
   } else if (action === 'f') {
-    editPending_(cq, chatId, messageId, pid, function (entry, options) {
-      if (options.people[index]) entry.forWho = options.people[index].name;
+    editSaved_(cq, chatId, messageId, pid, function (entry, options) {
+      if (!options.people[index]) return null;
+      entry.forWho = options.people[index].name;
+      return { forWho: entry.forWho };
     });
   } else if (action === 'b') {
-    editPending_(cq, chatId, messageId, pid, function () {});
+    editSaved_(cq, chatId, messageId, pid, function () { return {}; });
+  } else if (action === 'u') {
+    undoOne_(cq, chatId, messageId, pid);
+  } else if (action === 'ua') {
+    undoAll_(cq, chatId, messageId, pid);
   } else if (action === 'ud') {
     var deleted = deleteLastEntry();
     editMessageText(chatId, messageId, deleted
@@ -160,13 +196,17 @@ function handleCallbackQuery_(cq) {
   }
 }
 
-function getPending_(pid) {
-  var raw = CacheService.getScriptCache().get('pending_' + pid);
+function getSaved_(pid) {
+  var raw = CacheService.getScriptCache().get('saved_' + pid);
   return raw ? JSON.parse(raw) : null;
 }
 
-function putPending_(pid, entry) {
-  CacheService.getScriptCache().put('pending_' + pid, JSON.stringify(entry), PENDING_TTL_SECONDS);
+function putSaved_(pid, ids, entries) {
+  CacheService.getScriptCache().put('saved_' + pid, JSON.stringify({ ids: ids, entries: entries }), PENDING_TTL_SECONDS);
+}
+
+function removeSaved_(pid) {
+  CacheService.getScriptCache().remove('saved_' + pid);
 }
 
 function setMethod_(entry, method) {
@@ -175,45 +215,62 @@ function setMethod_(entry, method) {
   entry.method = method ? method.label : '';
 }
 
-/** Applies one tap to the pending entry and re-renders the same message with the new state. */
-function editPending_(cq, chatId, messageId, pid, mutate) {
-  var entry = getPending_(pid);
-  if (!entry) {
-    answerCallbackQuery(cq.id, 'This entry expired, please send it again.');
+/**
+ * Applies one tap to a saved (single-entry) message: mutates the cached snapshot,
+ * patches the real Ledger row with whatever `mutate` says changed, and re-renders.
+ * `mutate(entry, options)` mutates `entry` in place and returns the patch to write, or
+ * null/undefined for "nothing valid was picked, leave the row alone."
+ */
+function editSaved_(cq, chatId, messageId, pid, mutate) {
+  var saved = getSaved_(pid);
+  if (!saved) {
+    answerCallbackQuery(cq.id, 'This entry expired - edit it in the Sheet directly, or resend the message.');
     return;
   }
   var options = readOptions();
-  mutate(entry, options);
-  putPending_(pid, entry);
-  editMessageText(chatId, messageId, previewText_(entry), entryKeyboard_(pid, entry, options));
+  var entry = saved.entries[0];
+  var patch = mutate(entry, options);
+  if (patch && Object.keys(patch).length > 0) {
+    updateEntryField(saved.ids[0], patch);
+  }
+  putSaved_(pid, saved.ids, saved.entries);
+  editMessageText(chatId, messageId, savedText_(entry), entryKeyboard_(pid, entry, options));
   answerCallbackQuery(cq.id);
 }
 
-function saveFromCallback_(cq, chatId, messageId, pid) {
-  var entry = getPending_(pid);
-  if (!entry) {
-    answerCallbackQuery(cq.id, 'This entry expired, please send it again.');
+function undoOne_(cq, chatId, messageId, pid) {
+  var saved = getSaved_(pid);
+  if (!saved) {
+    answerCallbackQuery(cq.id, 'Already gone or expired.');
     return;
   }
-  appendEntry(entry);
-  CacheService.getScriptCache().remove('pending_' + pid);
-  // Salary landing in an account shouldn't change which account/app spending defaults to.
-  if (entry.type !== 'Income') setLastPayment(entry.account, entry.method);
+  var ok = deleteEntryById_(saved.ids[0]);
+  removeSaved_(pid);
+  editMessageText(chatId, messageId, ok ? 'Undone.' : 'Already gone - nothing to undo.');
+  answerCallbackQuery(cq.id, ok ? 'Undone' : '');
+}
 
-  editMessageText(chatId, messageId,
-    'Saved ✓ · ' + entry.type + ' · ' + escapeHtml_(entry.category) + ' · ₹' + entry.amount +
-    '\n' + entryOwnerLine_(entry) +
-    '\nToday: ' + formatSummary_(summaryForToday()) +
-    '\nMonth: ' + formatSummary_(summaryForMonth()));
-  answerCallbackQuery(cq.id, 'Saved');
+function undoAll_(cq, chatId, messageId, pid) {
+  var saved = getSaved_(pid);
+  if (!saved) {
+    answerCallbackQuery(cq.id, 'Already gone or expired.');
+    return;
+  }
+  var count = saved.ids.filter(function (id) { return deleteEntryById_(id); }).length;
+  removeSaved_(pid);
+  editMessageText(chatId, messageId, count > 0
+    ? 'Undone ' + count + ' ' + (count === 1 ? 'entry' : 'entries') + '.'
+    : 'Already gone - nothing to undo.');
+  answerCallbackQuery(cq.id);
 }
 
 function showCategoryChooser_(cq, chatId, messageId, pid) {
-  var entry = getPending_(pid);
-  if (!entry) {
-    answerCallbackQuery(cq.id, 'This entry expired, please send it again.');
+  var saved = getSaved_(pid);
+  if (!saved) {
+    answerCallbackQuery(cq.id, 'This entry expired - edit it in the Sheet directly, or resend the message.');
     return;
   }
+  var entry = saved.entries[0];
   var categories = getSelectableCategories(entry.type);
   editMessageText(chatId, messageId, 'Choose a category for: ' + escapeHtml_(entry.description), categoryKeyboard_(pid, categories));
   answerCallbackQuery(cq.id);
@@ -230,11 +287,27 @@ function entryOwnerLine_(entry) {
   return direction + ': ' + account + '   For: ' + escapeHtml_(entry.forWho);
 }
 
-function previewText_(entry) {
+function savedText_(entry) {
   var sign = entry.type === 'Income' ? '+' : '−';
-  var lines = [sign + '₹' + entry.amount + ' · ' + entry.type + ' · ' + escapeHtml_(entry.category)];
+  var lines = ['Saved ✓ ' + sign + '₹' + entry.amount + ' · ' + entry.type + ' · ' + escapeHtml_(entry.category)];
   if (entry.description) lines.push(escapeHtml_(entry.description));
   lines.push(entryOwnerLine_(entry));
+  lines.push('Today: ' + formatSummary_(summaryForToday()));
+  lines.push('Month: ' + formatSummary_(summaryForMonth()));
+  return lines.join('\n');
+}
+
+function savedMultiText_(entries) {
+  var lines = ['Saved ' + entries.length + ' entries ✓'];
+  entries.forEach(function (e, i) {
+    var sign = e.type === 'Income' ? '+' : '−';
+    var desc = e.description ? ' (' + escapeHtml_(e.description) + ')' : '';
+    lines.push((i + 1) + '. ' + sign + '₹' + e.amount + ' · ' + e.type + ' · ' + escapeHtml_(e.category) + desc);
+  });
+  var net = entries.reduce(function (sum, e) { return sum + (e.type === 'Income' ? e.amount : -e.amount); }, 0);
+  lines.push('Net from this message: ' + formatSigned_(net));
+  lines.push('Today: ' + formatSummary_(summaryForToday()));
+  lines.push('Month: ' + formatSummary_(summaryForMonth()));
   return lines.join('\n');
 }
 
@@ -245,13 +318,14 @@ function chunk_(items, size) {
 }
 
 /**
- * One screen for the whole entry: tap a name to change it, ● marks the current choice.
- * Save, Category, every account, the methods of the chosen account, and every person.
+ * One screen for the whole (already-saved) entry: tap a name to correct it, ● marks
+ * the current choice. Undo, Category, every account, the methods of the chosen
+ * account, and every person.
  */
 function entryKeyboard_(pid, entry, options) {
   var mark = function (selected, label) { return (selected ? '● ' : '') + label; };
   var rows = [[
-    { text: '✓ Save', data: 's:' + pid },
+    { text: '↩ Undo', data: 'u:' + pid },
     { text: 'Category: ' + entry.category, data: 'c:' + pid }
   ]];
 
@@ -284,6 +358,10 @@ function categoryKeyboard_(pid, categories) {
   return inlineKeyboard(rows);
 }
 
+function multiKeyboard_(pid) {
+  return inlineKeyboard([[{ text: '↩ Undo all', data: 'ua:' + pid }]]);
+}
+
 function formatSummary_(summary) {
   return formatSigned_(summary.net) + ' net (income ₹' + Math.round(summary.income) + ', expense ₹' + Math.round(Math.abs(summary.expense)) + ')';
 }
@@ -294,11 +372,14 @@ function formatSigned_(n) {
 }
 
 function helpText_() {
-  return 'Send an amount and a description to log it:\n' +
+  return 'Send an amount and a description to log it - it saves immediately:\n' +
     '  <b>60 snacks</b> → expense\n' +
     '  <b>+50000 salary</b> → income\n' +
     '  <b>12000 credit card bill</b> → transfer (not counted as spending)\n' +
     'Add words from your Options tab to skip the taps, e.g. <b>250 gift partner gpay</b>.\n' +
-    'Shorthand: ₹, rs, and k (e.g. <b>1.2k rent</b>) all work.\n\n' +
+    'Shorthand: ₹, rs, and k (e.g. <b>1.2k rent</b>) all work.\n' +
+    'A message can describe more than one transaction at once (e.g. someone paying from\n' +
+    'your card and sending it back) - it\'ll log each one and you can undo the whole message.\n' +
+    'Made a mistake? Tap a button under the confirmation to fix it, or Undo.\n\n' +
     'Commands: /today /month /undo /help';
 }

@@ -122,6 +122,73 @@ function deleteLastEntry() {
   }
 }
 
+/**
+ * Column A is the ID. A single-column read + indexOf is fine at personal-ledger scale
+ * (one sheet call, no per-row loop) and safer than trusting a row position, since rows
+ * can move (deletes) and a single message can append more than one row.
+ * @returns {number} the sheet row number, or -1 if not found
+ */
+function findRowById_(sheet, id) {
+  var ids = sheet.getRange(2, 1, Math.max(sheet.getLastRow() - 1, 0), 1).getValues();
+  for (var i = 0; i < ids.length; i++) if (ids[i][0] === id) return i + 2;
+  return -1;
+}
+
+var FIELD_COLUMNS = { type: 4, category: 5, description: 7, payment: 8, account: 10, forWho: 11, app: 12 };
+
+/**
+ * Patches specific fields of an already-saved row, recomputing the signed Amount if
+ * `type` changes (same sign rule as appendEntry). Used by the bot's post-save
+ * correction buttons (category/account/method/person taps).
+ * @param {string} id
+ * @param {{type?:string, category?:string, account?:string, payment?:string, app?:string, forWho?:string}} patch
+ * @returns {boolean} true if a row was found and updated
+ */
+function updateEntryField(id, patch) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = getLedgerSheet_();
+    var row = findRowById_(sheet, id);
+    if (row === -1) return false;
+
+    Object.keys(patch).forEach(function (field) {
+      var col = FIELD_COLUMNS[field];
+      if (col) sheet.getRange(row, col).setValue(patch[field]);
+    });
+
+    if (patch.type) {
+      var amountCell = sheet.getRange(row, 6);
+      var signed = patch.type === 'Income' ? Math.abs(amountCell.getValue()) : -Math.abs(amountCell.getValue());
+      amountCell.setValue(signed);
+    }
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Deletes one specific row by ID (for the bot's per-message Undo button) rather than
+ * whatever happens to be the last row - safer when a message produced multiple entries
+ * or another message was logged in between. deleteLastEntry() (below) is unchanged and
+ * keeps backing the /undo command, which is intentionally "undo whatever's most recent."
+ * @returns {boolean} true if a row was found and deleted
+ */
+function deleteEntryById_(id) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = getLedgerSheet_();
+    var row = findRowById_(sheet, id);
+    if (row === -1) return false;
+    sheet.deleteRow(row);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function sumAmountsSince_(sinceDate) {
   var sheet = getLedgerSheet_();
   var lastRow = sheet.getLastRow();

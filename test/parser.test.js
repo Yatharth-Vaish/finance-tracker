@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseEntry } = require('../src/Parser.js');
+const { parseEntry, DEFAULT_CATEGORIES } = require('../src/Parser.js');
 
 test('"60 snacks" is an expense categorized as Food', () => {
   const r = parseEntry('60 snacks');
@@ -141,4 +141,71 @@ test('an explicit + never becomes a Transfer', () => {
   const r = parseEntry('+500 savings interest');
   assert.equal(r.type, 'Income');
   assert.equal(r.category, 'Interest');
+});
+
+const { sanitizeLlmEntries } = require('../src/Parser.js');
+
+test('phrase-based income detection: "sent to me" is Income even without a leading +', () => {
+  const r = parseEntry('250 sent to me by my partner', undefined, options);
+  assert.equal(r.type, 'Income');
+  assert.equal(r.amount, 250);
+});
+
+test('"gave me" and "received" are also treated as Income', () => {
+  assert.equal(parseEntry('100 gave me for lunch').type, 'Income');
+  assert.equal(parseEntry('500 received from friend').type, 'Income');
+});
+
+test('sanitizeLlmEntries drops entries with a bad type or zero/non-numeric amount', () => {
+  const result = sanitizeLlmEntries([
+    { type: 'Bogus', amount: 100, category: 'Food' },
+    { type: 'Expense', amount: 0, category: 'Food' },
+    { type: 'Expense', amount: 'not a number', category: 'Food' }
+  ], DEFAULT_CATEGORIES, options);
+  assert.equal(result.length, 0);
+});
+
+test('sanitizeLlmEntries takes the absolute value of a negative amount instead of dropping it', () => {
+  const r = sanitizeLlmEntries([{ type: 'Expense', amount: -60, category: 'Food' }], DEFAULT_CATEGORIES, options);
+  assert.equal(r[0].amount, 60);
+});
+
+test('sanitizeLlmEntries falls back to a safe category when the LLM hallucinates one', () => {
+  const expense = sanitizeLlmEntries([{ type: 'Expense', amount: 60, category: 'Made Up Category' }], DEFAULT_CATEGORIES, options);
+  assert.equal(expense[0].category, 'Other');
+  const income = sanitizeLlmEntries([{ type: 'Income', amount: 60, category: 'Made Up Category' }], DEFAULT_CATEGORIES, options);
+  assert.equal(income[0].category, 'Other Income');
+});
+
+test('sanitizeLlmEntries clears an account/person name that does not exactly match a real one', () => {
+  const r = sanitizeLlmEntries([{
+    type: 'Expense', amount: 60, category: 'Food', account: 'Some Bank Nobody Configured', forWho: 'A Stranger'
+  }], DEFAULT_CATEGORIES, options);
+  assert.equal(r[0].account, '');
+  assert.equal(r[0].forWho, '');
+});
+
+test('sanitizeLlmEntries keeps a real account/person/app name (case-insensitively)', () => {
+  const r = sanitizeLlmEntries([{
+    type: 'Expense', amount: 60, category: 'Food', account: 'alpha bank', forWho: 'PARTNER', app: 'gpay'
+  }], DEFAULT_CATEGORIES, options);
+  assert.equal(r[0].account, 'Alpha Bank');
+  assert.equal(r[0].forWho, 'Partner');
+  assert.equal(r[0].app, 'GPay');
+});
+
+test('sanitizeLlmEntries passes a valid multi-entry array through unchanged in shape', () => {
+  const r = sanitizeLlmEntries([
+    { type: 'Transfer', amount: 357, category: 'Internal Conversion', description: 'partner food off zaggle', account: 'Meal Card' },
+    { type: 'Transfer', amount: 357, category: 'Internal Conversion', description: 'zaggle reimbursement', account: 'Beta Bank' }
+  ], DEFAULT_CATEGORIES, options);
+  assert.equal(r.length, 2);
+  assert.equal(r[0].account, 'Meal Card');
+  assert.equal(r[1].account, 'Beta Bank');
+});
+
+test('sanitizeLlmEntries silently ignores a non-array input', () => {
+  assert.deepEqual(sanitizeLlmEntries(null, DEFAULT_CATEGORIES, options), []);
+  assert.deepEqual(sanitizeLlmEntries(undefined, DEFAULT_CATEGORIES, options), []);
+  assert.deepEqual(sanitizeLlmEntries('not an array', DEFAULT_CATEGORIES, options), []);
 });
