@@ -174,55 +174,79 @@ function writeMonthlyTable_(sheet, startRow) {
   sheet.getRange(headerRow + 1, 1, rows.length, 4).setFormulas(rows);
   sheet.getRange(headerRow + 1, 2, rows.length, 3).setNumberFormat(INR_FORMAT);
 
-  // Only Month/Income/Expense are charted (Cumulative Net stays a table column, not a
-  // series) - a third mixed-scale line was what made the legend colors hard to read.
+  // A plain-text caption next to the chart, not just the built-in legend, so the color
+  // -> meaning mapping doesn't depend on how legibly Sheets renders the legend itself.
+  sheet.getRange(startRow, 6)
+    .setValue('Bars: green = Income, red = Expense (left axis)  ·  Blue line = Cumulative Net (right axis)')
+    .setFontStyle('italic').setFontSize(9);
+
   var chart = sheet.newChart()
     .setChartType(Charts.ChartType.COLUMN)
-    .addRange(sheet.getRange(headerRow, 1, rows.length + 1, 3))
+    .addRange(sheet.getRange(headerRow, 1, rows.length + 1, 4))
     .setPosition(headerRow, 6, 0, 0)
     .setOption('title', 'Income vs Expense by Month')
     .setOption('legend', { position: 'top', textStyle: { fontSize: 12 } })
-    .setOption('colors', ['#34A853', '#EA4335']) // green = Income, red = Expense
+    .setOption('series', {
+      0: { color: '#34A853' },                                    // Income
+      1: { color: '#EA4335' },                                    // Expense
+      2: { type: 'line', color: '#4285F4', targetAxisIndex: 1 }    // Cumulative Net
+    })
     .setOption('hAxis', { title: 'Month' })
-    .setOption('vAxis', { title: 'Amount (₹)' })
+    .setOption('vAxes', { 0: { title: 'Income / Expense (₹)' }, 1: { title: 'Cumulative Net (₹)' } })
     .setOption('height', 300)
     .build();
   sheet.insertChart(chart);
 }
 
 /**
- * Where this month's income actually went: spent, moved into bills/SIPs/savings
- * (Transfers), or still sitting unspent. Mirrors the user's own mental model of their
- * accounts (a fixed slice out to spending, a fixed slice to structured saving, the rest
- * is free savings) rather than just re-showing the expense-category breakdown.
+ * Where this month's income actually went: spent, tied up in bills/SIPs, moved to
+ * explicit savings, or still sitting unallocated. Mirrors the user's own mental model of
+ * their accounts (a slice out to spending, a slice to obligations/investing, a slice to
+ * deliberate savings, the rest is free money) rather than re-showing the expense-category
+ * breakdown. "Bills/SIPs" and "Savings" are specific Transfer categories (see
+ * DEFAULT_CATEGORIES in Parser.js); other transfers (own-account moves, Zaggle-style
+ * conversions) are left out of this chart entirely since they don't change how much is
+ * actually left for the user, just which account holds it.
  */
 function writeIncomeAllocationChart_(sheet, startRow) {
   sheet.getRange(startRow, 1).setValue('This Month: Where Your Income Went').setFontWeight('bold');
   var headerRow = startRow + 1;
   sheet.getRange(headerRow, 1, 1, 2).setValues([['', 'Amount']]).setFontWeight('bold');
 
-  var expenseRow = headerRow + 1;
-  var transferRow = headerRow + 2;
-  var leftoverRow = headerRow + 3;
+  var spentRow = headerRow + 1;
+  var billsRow = headerRow + 2;
+  var savingsRow = headerRow + 3;
+  var leftoverRow = headerRow + 4;
 
-  sheet.getRange(expenseRow, 1, 3, 1).setValues([
+  sheet.getRange(spentRow, 1, 4, 1).setValues([
     ['Spent (Expenses)'],
-    ['Moved to bills / SIPs / savings (Transfers)'],
-    ['Left over (unspent)']
+    ['Bills / SIPs'],
+    ['Savings'],
+    ['Left over']
   ]);
-  // B4/B5/B8 are the This Month Income/Expense/Transfers-Out tiles from writeTiles_.
-  // Expense (B5) is stored negative; Transfers Out (B8) is already a positive magnitude.
-  sheet.getRange(expenseRow, 2).setFormula('=-B5');
-  sheet.getRange(transferRow, 2).setFormula('=B8');
-  sheet.getRange(leftoverRow, 2).setFormula('=MAX(0, B4-B' + expenseRow + '-B' + transferRow + ')');
-  sheet.getRange(expenseRow, 2, 3, 1).setNumberFormat(INR_FORMAT);
+
+  var inMonth = 'Ledger!C:C, ">="&' + MONTH_START;
+  var transferCategory = function (category) {
+    return 'SUMIFS(Ledger!F:F, ' + inMonth + ', Ledger!D:D, "Transfer", Ledger!E:E, "' + category + '")';
+  };
+  // B4/B5 are the This Month Income/Expense tiles from writeTiles_. Expense and Transfer
+  // amounts are stored negative, so each formula negates to get a positive magnitude.
+  sheet.getRange(spentRow, 2).setFormula('=-B5');
+  sheet.getRange(billsRow, 2).setFormula('=-(' + transferCategory('Credit Card Bill') + '+' + transferCategory('SIP / Investment') + ')');
+  sheet.getRange(savingsRow, 2).setFormula('=-' + transferCategory('Savings'));
+  sheet.getRange(leftoverRow, 2).setFormula('=MAX(0, B4-B' + spentRow + '-B' + billsRow + '-B' + savingsRow + ')');
+  sheet.getRange(spentRow, 2, 4, 1).setNumberFormat(INR_FORMAT);
+
+  sheet.getRange(startRow, 6)
+    .setValue('Red = Spent  ·  Yellow = Bills/SIPs  ·  Dark green = Savings  ·  Lemon green = Left over')
+    .setFontStyle('italic').setFontSize(9);
 
   var chart = sheet.newChart()
     .setChartType(Charts.ChartType.PIE)
-    .addRange(sheet.getRange(headerRow, 1, 4, 2))
+    .addRange(sheet.getRange(headerRow, 1, 5, 2))
     .setPosition(headerRow, 6, 0, 0)
     .setOption('title', 'This Month: Income Allocation')
-    .setOption('colors', ['#EA4335', '#FBBC04', '#34A853']) // red = spent, yellow = transfers, green = left over
+    .setOption('colors', ['#EA4335', '#FBBC04', '#0B8043', '#CDDC39']) // red, yellow, dark green, lemon green
     .setOption('legend', { position: 'top', textStyle: { fontSize: 12 } })
     .setOption('height', 300)
     .build();
