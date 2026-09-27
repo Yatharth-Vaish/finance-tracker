@@ -51,6 +51,31 @@ var AMOUNT_PATTERN = /(₹|rs\.?\s*)?(\d+(?:\.\d+)?)(k)?\b/i;
 // right even when the LLM is unavailable, rather than defaulting to Expense.
 var INCOME_PHRASE_PATTERN = /\b(sent|gave|paid|transferred)\b\s*(to\s+)?me\b|\breceived\b/i;
 
+function stripPhrase_(text, matcher) {
+  return text.replace(matcher, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Recognizes a handful of relative date phrases ("yesterday", "today", "day before
+ * yesterday", "3 days ago") and strips them out before amount parsing runs - otherwise
+ * the "3" in "3 days ago" would get picked up as the amount instead of the real number.
+ * Absolute dates ("on 25th September") aren't handled here; that needs real language
+ * understanding, which is what the Gemini path is for - this fallback only covers the
+ * common relative cases.
+ * @returns {{offsetDays: number|null, remaining: string}} offsetDays is 0 for "today",
+ *          negative for the past, null if no date phrase was found (caller defaults to today).
+ */
+function extractDateOffset_(text) {
+  var daysAgo = /\b(\d+)\s+days?\s+ago\b/i.exec(text);
+  if (daysAgo) return { offsetDays: -Number(daysAgo[1]), remaining: stripPhrase_(text, daysAgo[0]) };
+
+  if (/\bday before yesterday\b/i.test(text)) return { offsetDays: -2, remaining: stripPhrase_(text, /\bday before yesterday\b/i) };
+  if (/\byesterday\b/i.test(text)) return { offsetDays: -1, remaining: stripPhrase_(text, /\byesterday\b/i) };
+  if (/\btoday\b/i.test(text)) return { offsetDays: 0, remaining: stripPhrase_(text, /\btoday\b/i) };
+
+  return { offsetDays: null, remaining: text };
+}
+
 function splitList_(value) {
   return String(value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 }
@@ -113,6 +138,9 @@ function parseEntry(text, categories, options) {
     explicitIncome = true;
   }
 
+  var dateInfo = extractDateOffset_(working);
+  working = dateInfo.remaining;
+
   var match = AMOUNT_PATTERN.exec(working);
   if (!match) return null;
 
@@ -141,10 +169,12 @@ function parseEntry(text, categories, options) {
     }
   }
 
-  return {
+  var entry = {
     type: type, amount: amount, category: category, description: description, raw: raw,
     account: tags.account, app: tags.app, forWho: tags.forWho
   };
+  if (dateInfo.offsetDays !== null) entry.dateOffsetDays = dateInfo.offsetDays;
+  return entry;
 }
 
 /**
@@ -288,7 +318,7 @@ function sanitizeLlmEntries(rawEntries, categories, options) {
       category = fallback ? fallback.category : (categoryNames[0] || 'Other');
     }
 
-    return {
+    var entry = {
       type: type,
       amount: amount,
       category: category,
@@ -298,6 +328,10 @@ function sanitizeLlmEntries(rawEntries, categories, options) {
       app: appNames[String(raw.app || '').toLowerCase()] || '',
       forWho: personNames[String(raw.forWho || '').toLowerCase()] || ''
     };
+    // Only an exact YYYY-MM-DD is trusted; anything else (garbled, relative text the
+    // model forgot to resolve) is dropped so it defaults to today rather than erroring.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(raw.date || ''))) entry.date = raw.date;
+    return entry;
   }).filter(Boolean);
 }
 

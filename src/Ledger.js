@@ -71,7 +71,28 @@ function getSelectableCategories(entryType) {
 }
 
 /**
- * @param {{type:string, amount:number, category:string, description:string, payment:string, raw:string, account:string, forWho:string, app:string}} entry
+ * Resolves a parsed entry's `dateOffsetDays` (from the regex fallback, e.g. "yesterday"
+ * -> -1) or `date` (an LLM-supplied YYYY-MM-DD) into an actual Date for the Ledger's
+ * Date column. Falls back to now/today when the message didn't specify anything.
+ */
+function resolveEntryDate_(entry) {
+  var now = new Date();
+  if (typeof entry.dateOffsetDays === 'number') {
+    var d = new Date(now);
+    d.setDate(d.getDate() + entry.dateOffsetDays);
+    return d;
+  }
+  if (entry.date && /^\d{4}-\d{2}-\d{2}$/.test(entry.date)) {
+    var parts = entry.date.split('-').map(Number);
+    // Local calendar date at the current time-of-day, not UTC midnight - avoids an
+    // off-by-one day near midnight IST if this ever ran in a UTC-anchored context.
+    return new Date(parts[0], parts[1] - 1, parts[2], now.getHours(), now.getMinutes(), now.getSeconds());
+  }
+  return now;
+}
+
+/**
+ * @param {{type:string, amount:number, category:string, description:string, payment:string, raw:string, account:string, forWho:string, app:string, dateOffsetDays?:number, date?:string}} entry
  * @returns {string} the generated row ID
  */
 function appendEntry(entry) {
@@ -81,11 +102,12 @@ function appendEntry(entry) {
     var sheet = getLedgerSheet_();
     var id = Utilities.getUuid();
     var now = new Date();
+    var effectiveDate = resolveEntryDate_(entry);
     var signedAmount = entry.type === 'Income' ? Math.abs(entry.amount) : -Math.abs(entry.amount);
     sheet.appendRow([
       id,
       now,
-      now,
+      effectiveDate,
       entry.type,
       entry.category,
       signedAmount,
@@ -129,7 +151,8 @@ function deleteLastEntry() {
  * @returns {number} the sheet row number, or -1 if not found
  */
 function findRowById_(sheet, id) {
-  var ids = sheet.getRange(2, 1, Math.max(sheet.getLastRow() - 1, 0), 1).getValues();
+  if (sheet.getLastRow() < 2) return -1; // header only, or empty - getRange needs >=1 row
+  var ids = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues();
   for (var i = 0; i < ids.length; i++) if (ids[i][0] === id) return i + 2;
   return -1;
 }

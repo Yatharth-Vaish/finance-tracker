@@ -209,3 +209,38 @@ test('sanitizeLlmEntries silently ignores a non-array input', () => {
   assert.deepEqual(sanitizeLlmEntries(undefined, DEFAULT_CATEGORIES, options), []);
   assert.deepEqual(sanitizeLlmEntries('not an array', DEFAULT_CATEGORIES, options), []);
 });
+
+test('"yesterday" is detected and stripped from the description', () => {
+  const r = parseEntry('250 lunch yesterday');
+  assert.equal(r.amount, 250);
+  assert.equal(r.dateOffsetDays, -1);
+  assert.equal(r.description, 'lunch');
+});
+
+test('"day before yesterday" resolves to -2, not -1', () => {
+  const r = parseEntry('250 lunch day before yesterday');
+  assert.equal(r.dateOffsetDays, -2);
+  assert.equal(r.description, 'lunch');
+});
+
+test('"N days ago" does not get its leading number mistaken for the amount', () => {
+  const r = parseEntry('3 days ago 250 lunch');
+  assert.equal(r.amount, 250);
+  assert.equal(r.dateOffsetDays, -3);
+  assert.equal(r.description, 'lunch');
+});
+
+test('"today" resolves to offset 0 and is still distinguishable from "no date said"', () => {
+  assert.equal(parseEntry('250 lunch today').dateOffsetDays, 0);
+  assert.equal('dateOffsetDays' in parseEntry('250 lunch'), false);
+});
+
+test('sanitizeLlmEntries passes through a valid YYYY-MM-DD date', () => {
+  const r = sanitizeLlmEntries([{ type: 'Expense', amount: 60, category: 'Food', date: '2026-09-20' }], DEFAULT_CATEGORIES, options);
+  assert.equal(r[0].date, '2026-09-20');
+});
+
+test('sanitizeLlmEntries drops a malformed date instead of passing it through', () => {
+  const r = sanitizeLlmEntries([{ type: 'Expense', amount: 60, category: 'Food', date: 'yesterday' }], DEFAULT_CATEGORIES, options);
+  assert.equal('date' in r[0], false);
+});

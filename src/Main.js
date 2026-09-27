@@ -378,6 +378,7 @@ function helpText_() {
     '  <b>12000 credit card bill</b> → transfer (not counted as spending)\n' +
     'Add words from your Options tab to skip the taps, e.g. <b>250 gift partner gpay</b>.\n' +
     'Shorthand: ₹, rs, and k (e.g. <b>1.2k rent</b>) all work.\n' +
+    'Logging something from before today? Say so: <b>250 lunch yesterday</b>, <b>3 days ago</b>.\n' +
     'A message can describe more than one transaction at once (e.g. someone paying from\n' +
     'your card and sending it back) - it\'ll log each one and you can undo the whole message.\n' +
     'Made a mistake? Tap a button under the confirmation to fix it, or Undo.\n\n' +

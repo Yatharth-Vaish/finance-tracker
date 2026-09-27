@@ -27,7 +27,8 @@ var ENTRY_RESPONSE_SCHEMA = {
       description: { type: 'STRING' },
       account: { type: 'STRING' },
       forWho: { type: 'STRING' },
-      app: { type: 'STRING' }
+      app: { type: 'STRING' },
+      date: { type: 'STRING' }
     },
     required: ['type', 'amount', 'category', 'description']
   }
@@ -103,9 +104,14 @@ function buildParsePrompt_(text, categories, options) {
   }).join('\n');
   var peopleLines = options.people.map(function (p) { return '- ' + p.name; }).join('\n');
 
+  var today = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
+
   return [
     'You turn one personal-finance chat message into one or more structured ledger entries.',
     'Reply with ONLY a JSON array matching the response schema. One entry per distinct amount of money that moved.',
+    '',
+    'Today\'s date is ' + today + ' (YYYY-MM-DD, Asia/Kolkata).',
+    'If the message states or clearly implies a different date ("yesterday", "on the 25th", "last Monday"), set "date" to that date as YYYY-MM-DD. Otherwise omit "date" entirely - do not guess.',
     '',
     'Type rules:',
     '- Income: money coming in from outside (salary, someone paying the user back for something the user is NOT also logging as spent, wages).',
