@@ -148,6 +148,21 @@ non-public budget's balance, even in passing.
   by either function — its only job is making Sheets recalculate when the Ledger changes.
   If you add another custom function that reads the Ledger via `SpreadsheetApp` rather
   than through its own arguments, it needs the same treatment.
+- **Both parsing paths need to know the account→budget mapping, not just the category
+  names.** This was a real confirmed bug: the Gemini prompt originally explained what an
+  `" Allocation"` category *means* but never said *which account* each one is tied to, so
+  Gemini had no way to connect "money to [the Daily account]" with "Daily Allocation" and fell back to
+  the generic `"Own Account Transfer"`. `buildParsePrompt_` (`Gemini.js`) now takes
+  `budgets` and spells out the exact category→account mapping explicitly. The regex
+  fallback has its own, smaller version of the same fix:
+  `upgradeToAllocationCategory_` (`Parser.js`) upgrades a `parseEntry` result from the
+  generic `"Own Account Transfer"` to a budget's own `"<name> Allocation"` category when
+  the message named that budget's exact funding account — but only from that one generic
+  category, never from a more specific match (`Credit Card Bill`, `SIP / Investment`,
+  etc.), since those mean something deliberately different even when the account happens
+  to coincide. Both `parseEntry` and `parseEntryLLM_`/`buildParsePrompt_` now take an
+  optional `budgets` argument for this — if you add a third entry point for parsing a
+  message, it needs `budgets` passed through too, or it'll regress to the original bug.
 
 ## Testing
 

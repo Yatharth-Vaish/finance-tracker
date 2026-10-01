@@ -248,13 +248,30 @@ function computeBudgetBalance(budget, allBudgets, ledgerRows, startDate) {
 }
 
 /**
+ * If the message named an account that's a budget's funding account, and the category
+ * only matched the generic "Own Account Transfer" catch-all (keyword 'transfer' alone,
+ * no more specific signal), upgrade to that budget's own "<name> Allocation" category -
+ * the naming of the account is a strong, explicit signal of intent that a bare "transfer"
+ * keyword match shouldn't be allowed to miss. Never overrides a *more specific* category
+ * match (Credit Card Bill, SIP/Investment, Savings, Internal Conversion) - those mean
+ * something deliberately different even when the account happens to coincide.
+ */
+function upgradeToAllocationCategory_(type, category, accountName, budgets) {
+  if (type !== 'Transfer' || category !== 'Own Account Transfer' || !accountName || !budgets) return category;
+  var budget = budgets.find(function (b) { return !b.residual && b.account === accountName; });
+  return budget ? allocationCategoryFor_(budget.name) : category;
+}
+
+/**
  * @param {string} text - raw message text from Telegram
  * @param {Array<{type:string,category:string,keywords:string[]}>} [categories] - defaults to DEFAULT_CATEGORIES
  * @param {ReturnType<typeof parseOptions>} [options] - lets the message name an account, UPI app or person inline
+ * @param {ReturnType<typeof parseBudgets>} [budgets] - lets a named account upgrade a generic
+ *   transfer into that budget's own funding category (see upgradeToAllocationCategory_)
  * @returns {{type:string, amount:number, category:string, description:string, raw:string, account:string, app:string, forWho:string}|null}
  *          null when no amount could be found (caller should show a help message)
  */
-function parseEntry(text, categories, options) {
+function parseEntry(text, categories, options, budgets) {
   categories = categories || DEFAULT_CATEGORIES;
   var raw = (text || '').trim();
   if (!raw) return null;
@@ -299,7 +316,7 @@ function parseEntry(text, categories, options) {
     var transferCategory = matchCategory_('Transfer', description, categories);
     if (transferCategory) {
       type = 'Transfer';
-      category = transferCategory;
+      category = upgradeToAllocationCategory_('Transfer', transferCategory, tags.account, budgets);
     } else {
       category = guessCategory('Expense', description, categories);
     }

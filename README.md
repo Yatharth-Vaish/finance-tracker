@@ -76,11 +76,15 @@ instant push delivery.
 
 ## LLM parsing
 
-`src/Gemini.js` sends the message plus your live categories/accounts/people to the
-Gemini API and gets back structured JSON directly (constrained by a response schema, no
-free-text extraction). It's told to name only accounts/people that actually exist and to
-leave a field blank rather than guess; anything it still gets wrong is sanitized against
-the real lists (`sanitizeLlmEntries` in `Parser.js`) before it can reach the Sheet.
+`src/Gemini.js` sends the message plus your live categories/accounts/people/budgets to
+the Gemini API and gets back structured JSON directly (constrained by a response schema,
+no free-text extraction). It's told to name only accounts/people that actually exist and
+to leave a field blank rather than guess; anything it still gets wrong is sanitized
+against the real lists (`sanitizeLlmEntries` in `Parser.js`) before it can reach the
+Sheet. It's also told exactly which account funds which budget, so "moved 10000 to my
+daily account" correctly lands as a credit to that budget instead of a generic (and
+wrongly-signed) transfer — the regex fallback has its own smaller version of this same
+fix for when Gemini isn't configured.
 
 It's entirely optional and fails safe: no `GEMINI_API_KEY`, an API error, or an empty
 result all fall back to the regex parser (`parseEntry` in `Parser.js`) transparently -

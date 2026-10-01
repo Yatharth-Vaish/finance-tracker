@@ -431,3 +431,25 @@ test('findMatchingBudgets returns an empty array when nothing matches', () => {
   const names = findMatchingBudgets({ account: 'Cash', type: 'Expense', category: 'Food' }, budgets);
   assert.deepEqual(names, []);
 });
+
+test('a bare "transfer" to a budget\'s own account upgrades to that budget\'s Allocation category (regex fallback)', () => {
+  const r = parseEntry('10000 transfer to alpha', undefined, options, budgets);
+  assert.equal(r.type, 'Transfer');
+  assert.equal(r.category, 'Daily Allocation');
+  assert.equal(r.account, 'Alpha Bank');
+});
+
+test('the Allocation upgrade never overrides a more specific category match', () => {
+  const r = parseEntry('12000 credit card bill alpha', undefined, options, budgets);
+  assert.equal(r.category, 'Credit Card Bill');
+});
+
+test('the Allocation upgrade does nothing when the account is not a budget\'s funding account', () => {
+  const r = parseEntry('500 transfer to cash', undefined, options, budgets);
+  assert.equal(r.category, 'Own Account Transfer');
+});
+
+test('the Allocation upgrade does nothing without a budgets list (unaffected, pre-existing callers)', () => {
+  const r = parseEntry('10000 transfer to alpha', undefined, options);
+  assert.equal(r.category, 'Own Account Transfer');
+});

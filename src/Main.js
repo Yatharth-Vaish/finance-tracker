@@ -67,10 +67,10 @@ function isAllowedChat_(chatId) {
  * on any failure so the bot never goes silent just because the LLM is unavailable.
  * @returns {Array<object>} zero or more sanitized, default-filled entries
  */
-function parseMessageEntries_(text, categories, options) {
-  var entries = parseEntryLLM_(text, categories, options);
+function parseMessageEntries_(text, categories, options, budgets) {
+  var entries = parseEntryLLM_(text, categories, options, budgets);
   if (!entries) {
-    var single = parseEntry(text, categories, options);
+    var single = parseEntry(text, categories, options, budgets);
     entries = single ? [single] : [];
   }
   // Each entry looks up its own type's bucket - a multi-leg message can mix Income and
@@ -96,7 +96,8 @@ function handleMessage_(message) {
   }
 
   var options = readOptions();
-  var entries = parseMessageEntries_(text, readCategories(), options);
+  var budgets = readBudgets();
+  var entries = parseMessageEntries_(text, readCategories(), options, budgets);
   if (entries.length === 0) {
     sendMessage(chatId, helpText_());
     return;
@@ -114,8 +115,6 @@ function handleMessage_(message) {
 
   var pid = Utilities.getUuid().slice(0, 8);
   putSaved_(pid, ids, entries);
-
-  var budgets = readBudgets();
   if (entries.length === 1) {
     sendMessage(chatId, savedText_(entries[0], budgets), entryKeyboard_(pid, entries[0], options));
   } else {

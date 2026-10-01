@@ -93,7 +93,7 @@ function callGemini_(prompt) {
  * than invent a name, since sanitizeLlmEntries() clears (not guesses) anything that
  * doesn't match exactly, and applyDefaults() then fills blanks in sensibly.
  */
-function buildParsePrompt_(text, categories, options) {
+function buildParsePrompt_(text, categories, options, budgets) {
   var expenseCats = categories.filter(function (c) { return c.type === 'Expense'; }).map(function (c) { return c.category; });
   var incomeCats = categories.filter(function (c) { return c.type === 'Income'; }).map(function (c) { return c.category; });
   var transferCats = categories.filter(function (c) { return c.type === 'Transfer'; }).map(function (c) { return c.category; });
@@ -103,6 +103,15 @@ function buildParsePrompt_(text, categories, options) {
     return '- ' + a.name + (methods ? ' (' + methods + ')' : '');
   }).join('\n');
   var peopleLines = options.people.map(function (p) { return '- ' + p.name; }).join('\n');
+
+  // Without this, Gemini only has the abstract meaning of " Allocation" categories (see
+  // below) and no way to know WHICH account each one actually funds - it would have to
+  // guess, and guessing wrong here is exactly the bug this prompt section exists to
+  // prevent. This spells the mapping out explicitly instead.
+  var budgetLines = (budgets || [])
+    .filter(function (b) { return !b.residual; })
+    .map(function (b) { return '- "' + allocationCategoryFor_(b.name) + '" = money arriving in ' + b.account + ' (funds the "' + b.name + '" budget)'; })
+    .join('\n');
 
   var today = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
 
@@ -118,7 +127,9 @@ function buildParsePrompt_(text, categories, options) {
     '- Expense: the user spending their own money on something for themselves or someone else.',
     '- Transfer: money moving between the user\'s OWN accounts/cards/allowances - credit card bills, SIP/investment contributions, savings moves, and internal conversions. IMPORTANT: if someone else spends from one of the user\'s own accounts/cards (e.g. a partner paying with the user\'s meal card) and then pays the user back into another of the user\'s own accounts, that whole story is TWO Transfer legs (money left one of the user\'s pools, the equivalent value landed in another) - it is not Income and not the user\'s own Expense, because it nets to zero for the user and nobody outside the user gained or lost money.',
     '',
-    'Some Transfer categories end in " Allocation" (e.g. "Daily Allocation", "Investment Allocation") - these mean "the user is moving money from their main/salary account INTO that named budget\'s account this period" (e.g. "moved 10000 to my daily spends account" -> Transfer, category "Daily Allocation", account = the destination the money is arriving at, NOT the source). Use one of these exact categories only when the message clearly describes that specific kind of internal move; otherwise use "Own Account Transfer" or another Transfer category as normal. These balances only update once this kind of transfer is actually logged, so getting the category and destination account right here matters - don\'t guess one of these if the message is ambiguous about which account received the money.',
+    'Some Transfer categories end in " Allocation" - these mean "money is arriving at that budget\'s own account this period" (the opposite of every other Transfer category, which is money leaving an account). The exact mapping of category to account right now:',
+    budgetLines || '(no budgets configured)',
+    'If the message says money is moving TO one of these accounts specifically, use that account\'s own "<Name> Allocation" category, with "account" set to that same destination account. If the message moves money to some OTHER account not in this list, or you cannot tell which account is receiving it, use "Own Account Transfer" or another Transfer category instead - do not guess an Allocation category for an account it is not listed next to above.',
     '',
     'Known expense categories: ' + expenseCats.join(', '),
     'Known income categories: ' + incomeCats.join(', '),
@@ -144,10 +155,10 @@ function buildParsePrompt_(text, categories, options) {
  *          or null if Gemini isn't configured, failed, or returned nothing usable -
  *          the caller must fall back to parseEntry() in that case.
  */
-function parseEntryLLM_(text, categories, options) {
+function parseEntryLLM_(text, categories, options, budgets) {
   if (!getGeminiApiKey_()) return null;
 
-  var result = callGemini_(buildParsePrompt_(text, categories, options));
+  var result = callGemini_(buildParsePrompt_(text, categories, options, budgets));
   if (!result.ok) {
     Logger.log('Gemini parse failed, falling back to regex parser: ' + result.error);
     return null;
@@ -170,8 +181,9 @@ function parseEntryLLM_(text, categories, options) {
 function testGemini() {
   var categories = readCategories();
   var options = readOptions();
+  var budgets = readBudgets();
   var sample = 'partner paid 357 from the meal card for their food and sent 357 back to me in my bank account';
-  var result = callGemini_(buildParsePrompt_(sample, categories, options));
+  var result = callGemini_(buildParsePrompt_(sample, categories, options, budgets));
   Logger.log(JSON.stringify(result, null, 2));
   if (result.ok) {
     Logger.log('Sanitized: ' + JSON.stringify(sanitizeLlmEntries(result.entries, categories, options), null, 2));
