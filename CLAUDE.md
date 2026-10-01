@@ -133,6 +133,13 @@ non-public budget's balance, even in passing.
   the other. They're still computed **fully independently**; one going negative never
   reduces or caps the other (confirmed with the user via a concrete worked trip example
   in the plan file — still valid under this formula, just without an assumed target).
+- `findMatchingBudgets(entry, budgets)` answers "which budget(s) does this entry affect"
+  by reusing `matchesBudget_` directly on a parsed entry (not a saved ledger row — same
+  shape, just not yet dated/appended). It's shown in the save confirmation (`budgetLine_`
+  in `Main.js`) so that's visible at the moment of logging, not just something to work
+  out later from Account + Category. Deliberately excludes residual budgets, same reason
+  as `computeBudgetBalance` doesn't run `matchesBudget_` for them — they don't use that
+  rule at all, so a "match" would be fabricated, not just unhelpful.
 
 ## Testing
 

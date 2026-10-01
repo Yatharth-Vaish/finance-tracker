@@ -115,10 +115,11 @@ function handleMessage_(message) {
   var pid = Utilities.getUuid().slice(0, 8);
   putSaved_(pid, ids, entries);
 
+  var budgets = readBudgets();
   if (entries.length === 1) {
-    sendMessage(chatId, savedText_(entries[0]), entryKeyboard_(pid, entries[0], options));
+    sendMessage(chatId, savedText_(entries[0], budgets), entryKeyboard_(pid, entries[0], options));
   } else {
-    sendMessage(chatId, savedMultiText_(entries), multiKeyboard_(pid));
+    sendMessage(chatId, savedMultiText_(entries, budgets), multiKeyboard_(pid));
   }
 }
 
@@ -242,7 +243,7 @@ function editSaved_(cq, chatId, messageId, pid, mutate) {
     updateEntryField(saved.ids[0], patch);
   }
   putSaved_(pid, saved.ids, saved.entries);
-  editMessageText(chatId, messageId, savedText_(entry), entryKeyboard_(pid, entry, options));
+  editMessageText(chatId, messageId, savedText_(entry, readBudgets()), entryKeyboard_(pid, entry, options));
   answerCallbackQuery(cq.id);
 }
 
@@ -295,22 +296,31 @@ function entryOwnerLine_(entry) {
   return direction + ': ' + account + '   For: ' + escapeHtml_(entry.forWho);
 }
 
-function savedText_(entry) {
+/** "" when nothing matches, otherwise "Budget: X" or "Budget: X, Y" for the rare overlap. */
+function budgetLine_(entry, budgets) {
+  var names = findMatchingBudgets(entry, budgets);
+  return names.length > 0 ? 'Budget: ' + names.map(escapeHtml_).join(', ') : '';
+}
+
+function savedText_(entry, budgets) {
   var sign = entry.type === 'Income' ? '+' : '−';
   var lines = ['Saved ✓ ' + sign + '₹' + entry.amount + ' · ' + entry.type + ' · ' + escapeHtml_(entry.category)];
   if (entry.description) lines.push(escapeHtml_(entry.description));
   lines.push(entryOwnerLine_(entry));
+  var budget = budgetLine_(entry, budgets);
+  if (budget) lines.push(budget);
   lines.push('Today: ' + formatSummary_(summaryForToday()));
   lines.push(formatPublicSpendingPower_());
   return lines.join('\n');
 }
 
-function savedMultiText_(entries) {
+function savedMultiText_(entries, budgets) {
   var lines = ['Saved ' + entries.length + ' entries ✓'];
   entries.forEach(function (e, i) {
     var sign = e.type === 'Income' ? '+' : '−';
     var desc = e.description ? ' (' + escapeHtml_(e.description) + ')' : '';
-    lines.push((i + 1) + '. ' + sign + '₹' + e.amount + ' · ' + e.type + ' · ' + escapeHtml_(e.category) + desc);
+    var budget = budgetLine_(e, budgets);
+    lines.push((i + 1) + '. ' + sign + '₹' + e.amount + ' · ' + e.type + ' · ' + escapeHtml_(e.category) + desc + (budget ? ' · ' + budget : ''));
   });
   var net = entries.reduce(function (sum, e) { return sum + (e.type === 'Income' ? e.amount : -e.amount); }, 0);
   lines.push('Net from this message: ' + formatSigned_(net));

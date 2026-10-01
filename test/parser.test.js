@@ -391,3 +391,43 @@ test('"spending power" (startDate = 1st of current month) excludes prior months\
   // Spending power (this month only): nothing logged in October = 0
   assert.equal(computeBudgetBalance(daily, budgets, rows, firstOfThisMonth), 0);
 });
+
+const { findMatchingBudgets } = require('../src/Parser.js');
+
+test('findMatchingBudgets finds the one budget an Expense matches via account + category filter', () => {
+  const names = findMatchingBudgets({ account: 'Gamma Bank', type: 'Expense', category: 'Travel' }, budgets);
+  assert.deepEqual(names, ['Travel']);
+});
+
+test('findMatchingBudgets does not cross-match Gifting for a Travel-category spend on the same shared account', () => {
+  const names = findMatchingBudgets({ account: 'Gamma Bank', type: 'Expense', category: 'Travel' }, budgets);
+  assert.equal(names.includes('Gifting'), false);
+});
+
+test('findMatchingBudgets finds an unfiltered budget regardless of category (e.g. Daily, any Expense on its account)', () => {
+  const names = findMatchingBudgets({ account: 'Alpha Bank', type: 'Expense', category: 'Food' }, budgets);
+  assert.deepEqual(names, ['Daily']);
+});
+
+test('findMatchingBudgets matches Income to its account\'s budget with no category restriction', () => {
+  const names = findMatchingBudgets({ account: 'Meal Card', type: 'Income', category: 'Zaggle Allowance' }, budgets);
+  assert.deepEqual(names, ['Food Allowance']);
+});
+
+test('findMatchingBudgets matches an Allocation-category Transfer to the budget it funds', () => {
+  const names = findMatchingBudgets({ account: 'Alpha Bank', type: 'Transfer', category: 'Daily Allocation' }, budgets);
+  assert.deepEqual(names, ['Daily']);
+});
+
+test('findMatchingBudgets excludes the residual budget even though its account/category would otherwise match', () => {
+  const names = findMatchingBudgets({ account: 'Alpha Bank', type: 'Expense', category: 'Shopping' }, budgets);
+  // "Everything Else" is residual and shares Alpha Bank with Daily - Daily matches (no
+  // category filter), the residual budget must not appear even though matchesBudget_
+  // alone would also say yes for it.
+  assert.deepEqual(names, ['Daily']);
+});
+
+test('findMatchingBudgets returns an empty array when nothing matches', () => {
+  const names = findMatchingBudgets({ account: 'Cash', type: 'Expense', category: 'Food' }, budgets);
+  assert.deepEqual(names, []);
+});

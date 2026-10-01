@@ -188,6 +188,21 @@ function matchesBudget_(row, budget) {
 }
 
 /**
+ * Which budgets (zero, one, or occasionally more) a just-parsed entry would affect,
+ * using the exact same rule computeBudgetBalance sums with (matchesBudget_) - so "which
+ * allocation did this touch" is visible the moment it's logged, not just something you
+ * could work out later from Account + Category. Excludes residual budgets (e.g.
+ * "Luxury"): they don't use matchesBudget_ at all (see computeBudgetBalance's residual
+ * branch), so matching one here would be misleading, not just unhelpful.
+ * @param {{account:string, type:string, category:string}} entry
+ * @param {ReturnType<typeof parseBudgets>} budgets
+ * @returns {string[]} budget names, in Budgets-tab order
+ */
+function findMatchingBudgets(entry, budgets) {
+  return budgets.filter(function (b) { return !b.residual && matchesBudget_(entry, b); }).map(function (b) { return b.name; });
+}
+
+/**
  * A budget's balance via pure transaction-matching: the sum of every real logged amount
  * that matches it (matchesBudget_), on/after `startDate`. There is no assumed monthly
  * target - nothing counts until it's actually logged, including a budget's own funding
@@ -479,6 +494,7 @@ if (typeof module !== 'undefined' && module.exports) {
     sanitizeLlmEntries: sanitizeLlmEntries,
     parseBudgets: parseBudgets,
     computeBudgetBalance: computeBudgetBalance,
+    findMatchingBudgets: findMatchingBudgets,
     isAllocationCategory: isAllocationCategory,
     allocationCategoryFor_: allocationCategoryFor_,
     DEFAULT_CATEGORIES: DEFAULT_CATEGORIES,

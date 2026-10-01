@@ -8,6 +8,7 @@ You:  60 snacks
 Bot:  Saved ✓ −₹60 · Expense · Food
       snacks
       From: Bank Account · GPay   For: Me
+      Budget: Daily
       Today: −₹60 net (income ₹0, expense ₹60)
       Spending power: Daily +₹9,940
       [↩ Undo] [Category: Food]
@@ -49,7 +50,9 @@ single Google Apps Script project bound to the Sheet, free at personal-use volum
   **spending power** (the same, but only this month's — the auto-shown line after a save,
   and `/month`). Mark a budget `Public` to have its spending power shown automatically,
   safe to glance at in front of someone; everything else (and every budget's full
-  balance) only shows via `/budget`/`/balance`, run deliberately.
+  balance) only shows via `/budget`/`/balance`, run deliberately. Every save also shows
+  a `Budget:` line naming which budget(s) that entry affected (if any), worked out from
+  the same account + category rule the balances use — no separate tagging needed.
 - **One ledger, signed amounts** — income and expense share one table (`Ledger`), with
   amounts signed (+income / −expense), so cash flow is just a `SUM()`.
 - **Auto-built Dashboard** — monthly income/expense/net tiles, a 12-month trend, and this
