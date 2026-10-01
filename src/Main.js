@@ -127,7 +127,7 @@ function handleCommand_(chatId, text) {
     sendMessage(chatId, 'Today: ' + formatSummary_(summaryForToday()));
   } else if (command === '/month') {
     sendMessage(chatId, formatPublicSpendingPower_());
-  } else if (command === '/budget') {
+  } else if (command === '/budget' || command === '/balance') {
     sendMessage(chatId, formatAllBudgets_());
   } else if (command === '/undo') {
     sendMessage(chatId, 'Delete the most recent entry?', inlineKeyboard([
@@ -314,24 +314,29 @@ function savedMultiText_(entries) {
 }
 
 /**
- * Only the budgets flagged Public in the Budgets tab -
- * safe to show automatically, including after a save, even if someone glances at the
- * chat. Everything else (savings, investment transfers, the exact residual/"luxury"
- * amount) only ever shows via /budget, which the user has to deliberately run.
+ * Only the budgets flagged Public in the Budgets tab, and only *this month's* flat
+ * allowance (getMonthlySpendingPowers() - no rollover) - safe to show automatically,
+ * including after a save, even if someone glances at the chat. Everything else
+ * (non-public budgets, and the real rollover balance of every budget) only ever shows
+ * via /budget or /balance, which the user has to deliberately run.
  */
 function formatPublicSpendingPower_() {
-  var publicBudgets = getBudgetBalances().filter(function (b) { return b.public; });
+  var publicBudgets = getMonthlySpendingPowers().filter(function (b) { return b.public; });
   if (publicBudgets.length === 0) return 'Spending power: (no public budgets configured)';
   return 'Spending power: ' + publicBudgets.map(function (b) {
     return escapeHtml_(b.name) + ' ' + formatSigned_(b.balance);
   }).join(' · ');
 }
 
-/** The full private breakdown, every budget - only ever shown on an explicit /budget. */
+/**
+ * The real balance per budget "as per transaction history" - rolls over a prior month's
+ * leftover or overspend, unlike the monthly-reset spending power above. Every budget,
+ * public or not - only ever shown on an explicit /budget or /balance.
+ */
 function formatAllBudgets_() {
   var all = getBudgetBalances();
   if (all.length === 0) return 'No budgets configured yet - add rows to the Budgets tab.';
-  var lines = ['Budgets:'];
+  var lines = ['Balance (includes rollover from past months):'];
   all.forEach(function (b) {
     lines.push('  ' + escapeHtml_(b.name) + ': ' + formatSigned_(b.balance) + (b.public ? ' (public)' : ''));
   });
@@ -409,5 +414,6 @@ function helpText_() {
     'A message can describe more than one transaction at once (e.g. someone paying from\n' +
     'your card and sending it back) - it\'ll log each one and you can undo the whole message.\n' +
     'Made a mistake? Tap a button under the confirmation to fix it, or Undo.\n\n' +
-    'Commands: /today (income/expense) /month (public spending power) /budget (full private breakdown) /undo /help';
+    'Commands: /today (income/expense) /month (this month\'s public spending power, resets on the 1st) ' +
+    '/budget or /balance (every budget\'s real rollover balance, private) /undo /help';
 }

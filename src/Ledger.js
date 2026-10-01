@@ -62,32 +62,55 @@ function getBudgetStartDate() {
   return firstOfMonth;
 }
 
-/**
- * All budgets with their current balance, computed from a single read of the Ledger
- * (cheaper than one sheet scan per budget). Rows before the earliest possible budget
- * date are naturally excluded by computeBudgetBalance's own startDate check, so no
- * separate date-range read is needed here.
- * @returns {Array<{name:string, balance:number, public:boolean}>}
- */
-function getBudgetBalances() {
-  var budgets = readBudgets();
-  if (budgets.length === 0) return [];
-
+function readLedgerRowsForBudgets_() {
   var sheet = getLedgerSheet_();
   var lastRow = sheet.getLastRow();
-  var ledgerRows = [];
-  if (lastRow > 1) {
-    var values = sheet.getRange(2, 1, lastRow - 1, LEDGER_HEADERS.length).getValues();
-    ledgerRows = values.map(function (row) {
-      return { date: row[2], type: row[3], category: row[4], amount: row[5], account: row[9] };
-    });
-  }
+  if (lastRow <= 1) return [];
+  var values = sheet.getRange(2, 1, lastRow - 1, LEDGER_HEADERS.length).getValues();
+  return values.map(function (row) {
+    return { date: row[2], type: row[3], category: row[4], amount: row[5], account: row[9] };
+  });
+}
 
-  var startDate = getBudgetStartDate();
+/**
+ * All budgets' balance as of `startDate` (computeBudgetBalance(..., startDate, now) for
+ * each), from a single read of the Ledger - cheaper than one sheet scan per budget.
+ */
+function computeAllBudgetBalances_(startDate) {
+  var budgets = readBudgets();
+  if (budgets.length === 0) return [];
+  var ledgerRows = readLedgerRowsForBudgets_();
   var now = new Date();
   return budgets.map(function (b) {
     return { name: b.name, balance: computeBudgetBalance(b, budgets, ledgerRows, startDate, now), public: b.public };
   });
+}
+
+/**
+ * The real running balance per budget, "as per transaction history" - rolls over
+ * unspent (or over-budget) amounts month to month, back to BUDGET_START_DATE. This is
+ * what /budget (and the Dashboard's BUDGETBALANCE() cells) show.
+ * @returns {Array<{name:string, balance:number, public:boolean}>}
+ */
+function getBudgetBalances() {
+  return computeAllBudgetBalances_(getBudgetStartDate());
+}
+
+/**
+ * "Spending power": each budget reset to its flat monthlyTarget on the 1st, decremented
+ * only by *this* month's spend - no rollover of a prior month's leftover or overspend.
+ * This is the same formula as getBudgetBalances(), just evaluated from the start of the
+ * current month instead of the global BUDGET_START_DATE (monthsAccrued_ then always
+ * resolves to exactly 1). This is what the auto-shown line after a save, and /month, use
+ * for Public budgets - it's meant to be safe to glance at, and "how much of this month's
+ * allowance is left" is a simpler, more honest answer to that than a rollover total.
+ * @returns {Array<{name:string, balance:number, public:boolean}>}
+ */
+function getMonthlySpendingPowers() {
+  var firstOfMonth = new Date();
+  firstOfMonth.setDate(1);
+  firstOfMonth.setHours(0, 0, 0, 0);
+  return computeAllBudgetBalances_(firstOfMonth);
 }
 
 /**
@@ -100,6 +123,12 @@ function getBudgetBalances() {
  */
 function BUDGETBALANCE(name) {
   var match = getBudgetBalances().find(function (b) { return b.name === name; });
+  return match ? match.balance : 'No budget named "' + name + '"';
+}
+
+/** Same as BUDGETBALANCE(), but this month's flat allowance (no rollover) - see getMonthlySpendingPowers(). */
+function SPENDINGPOWER(name) {
+  var match = getMonthlySpendingPowers().find(function (b) { return b.name === name; });
   return match ? match.balance : 'No budget named "' + name + '"';
 }
 

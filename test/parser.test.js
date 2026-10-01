@@ -340,3 +340,20 @@ test('the residual budget is salary income minus every other budget\'s accrued t
   // other budgets' accrued targets for 1 month: 6000+4000+20000+3000+4000 = 37000
   assert.equal(computeBudgetBalance(byName('Everything Else'), budgets, rows, start, now), 60000 - 37000 - 8000);
 });
+
+test('"spending power" (startDate = 1st of current month) ignores prior months, unlike "balance" (startDate = budget start)', () => {
+  const budgetStart = new Date('2026-08-01'); // the global BUDGET_START_DATE, 2 months back
+  const firstOfThisMonth = new Date('2026-10-01');
+  const now = new Date('2026-10-15');
+  const rows = [
+    row('2026-08-10', 'Expense', 'Food', 'Alpha Bank', -1000), // prior month, underspent that month
+    row('2026-09-10', 'Expense', 'Food', 'Alpha Bank', -1000)  // prior month, underspent that month
+    // nothing spent yet in October
+  ];
+  const daily = byName('Daily'); // target 6000/mo
+
+  // Balance (rolls over): 3 months accrued (Aug+Sep+Oct) * 6000 - 2000 spent = 16000
+  assert.equal(computeBudgetBalance(daily, budgets, rows, budgetStart, now), 16000);
+  // Spending power (resets monthly): only this month counts, nothing spent in October yet = full 6000
+  assert.equal(computeBudgetBalance(daily, budgets, rows, firstOfThisMonth, now), 6000);
+});

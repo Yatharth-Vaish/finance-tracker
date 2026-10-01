@@ -75,15 +75,28 @@ non-public budget's balance, even in passing.
   index" — a message can append more than one row, and other rows can be deleted in
   between, so position drifts but the ID doesn't.
 - Budgets are **allowance/accrual**, not transfer-matching: a budget's balance is
-  `monthlyTarget * wholeMonthsSinceBudgetStartDate - matchedSpend` (`computeBudgetBalance`
-  in `Parser.js`), and it's allowed to go **negative** on purpose — an over-budget month
-  just reduces next month's balance, it is never floored at zero or blocked. There's
+  `monthlyTarget * wholeMonthsSinceStartDate - matchedSpend` (`computeBudgetBalance` in
+  `Parser.js`), and it's allowed to go **negative** on purpose — an over-budget month
+  just reduces the next period's balance, it is never floored at zero or blocked. There's
   deliberately no "ToAccount"/double-entry tracking of the actual monthly transfer
   between accounts; if the user logs that transfer anyway as a `Transfer` entry, it's
   purely informational and must not be wired into the budget calculation, or allowances
-  would be double-counted. `BUDGET_START_DATE` (Script
-  Properties, set once by `setupBudgetsSheet_`) must never be reset by a later setup run —
-  that would silently erase everyone's accrued balance back to one month's worth.
+  would be double-counted.
+- There are **two distinct readings of a budget**, both built on the one formula above,
+  differing only in which `startDate` is passed in (`Ledger.js`):
+  - `getBudgetBalances()` — the real rollover **balance**, "as per transaction history."
+    Uses `BUDGET_START_DATE` (Script Property, set once by `setupBudgetsSheet_`, must
+    never be reset by a later setup run — that would silently erase everyone's accrued
+    balance back to one month's worth). Shown via `/budget` or `/balance`, and the
+    Dashboard's `BUDGETBALANCE()` cells.
+  - `getMonthlySpendingPowers()` — **spending power**, reset to the flat `monthlyTarget`
+    on the 1st of *this* month, no rollover from before. Same formula, `startDate` =
+    first of the current month instead, which makes `monthsAccrued_` always resolve to 1.
+    This is what the auto-shown line after a save, and `/month`, use for `Public`
+    budgets — the user explicitly wants the number shown automatically (possibly in
+    front of someone) to be "how much of this month's allowance is left," not a
+    cross-month total. Don't collapse these back into one reading; they answer different
+    questions on purpose.
 - Two budgets can share one physical `Account` (e.g. Travel and Gifting both funded from
   one card) — that's what a budget's `Categories` filter is for. They're still computed
   **fully independently**; one going negative never reduces or caps the other. Don't add
