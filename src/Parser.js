@@ -153,59 +153,83 @@ function parseBudgets(rows) {
 }
 
 /**
- * Whole calendar months between `startDate`'s month and `now`'s month, inclusive of
- * both (a budget's full allowance is available from day 1 of its start month, not
- * prorated) - e.g. start=Sep 15, now=Sep 20 -> 1; now=Oct 1 -> 2. Never negative.
+ * A Transfer category ending in " Allocation" (e.g. "Daily Allocation") is the one place
+ * money is logged as actually moving INTO a budget's account that month - the single
+ * exception to "a Transfer row is always a debit (negative)." Named by convention as
+ * `<budget.name> Allocation` so no extra column is needed to link a budget to its own
+ * funding category; see ensureAllocationCategories_() in Setup.js, which creates these
+ * rows in the Categories tab automatically from the Budgets tab.
  */
-function monthsAccrued_(startDate, now) {
-  var months = (now.getFullYear() * 12 + now.getMonth()) - (startDate.getFullYear() * 12 + startDate.getMonth()) + 1;
-  return Math.max(0, months);
+function isAllocationCategory(category) {
+  return / Allocation$/.test(String(category || ''));
+}
+
+function allocationCategoryFor_(budgetName) {
+  return budgetName + ' Allocation';
 }
 
 /**
- * Sum of |Amount| for Expense/Transfer rows (never Income - this is "money that left
- * the account") on `budget.account`, on/after `startDate`, restricted to
- * `budget.categories` when that list is non-empty.
- * @param {{account:string, categories:string[]}} budget
- * @param {Array<{date:Date, type:string, category:string, account:string, amount:number}>} ledgerRows
+ * Whether `row` counts toward `budget`'s balance - shared by credits and debits alike.
+ * A row must be on the budget's own Account. From there:
+ *  - any Income into that account counts (a credit - e.g. a "Zaggle Allowance" Income
+ *    row, which needs no dedicated Allocation category since Income is already a credit)
+ *  - a Transfer in the budget's own "<name> Allocation" category counts (a credit - the
+ *    one place money is logged as actually arriving, not just assumed)
+ *  - anything else (Expense, or another Transfer category) is a debit, restricted to
+ *    `budget.categories` when that list is non-empty - this is what lets Travel and
+ *    Gifting share one account without crediting or debiting each other
  */
-function spentAgainstBudget_(budget, ledgerRows, startDate) {
-  return ledgerRows.reduce(function (sum, row) {
-    if (row.account !== budget.account) return sum;
-    if (row.type !== 'Expense' && row.type !== 'Transfer') return sum;
-    if (!(row.date instanceof Date) || row.date < startDate) return sum;
-    if (budget.categories.length > 0 && budget.categories.indexOf(row.category) === -1) return sum;
-    return sum + Math.abs(row.amount);
-  }, 0);
+function matchesBudget_(row, budget) {
+  if (row.account !== budget.account) return false;
+  if (row.type === 'Income') return true;
+  if (row.type === 'Transfer' && row.category === allocationCategoryFor_(budget.name)) return true;
+  if (budget.categories.length > 0) return budget.categories.indexOf(row.category) !== -1;
+  return true;
 }
 
 /**
- * A budget's current balance: `monthlyTarget * wholeMonthsElapsed - spendMatchedToIt`,
- * allowed to go negative (an over-budget month reduces next month's balance - that's
- * intended, not a bug; see the plan's Travel/trip example). The one exception is a
- * `residual: true` budget (e.g. "Luxury"), which has no target of its own: it's whatever
- * Salary income has come in, minus every other budget's accrued target, minus its own
- * spend - i.e. "what's left after every fixed allowance is set aside."
+ * A budget's balance via pure transaction-matching: the sum of every real logged amount
+ * that matches it (matchesBudget_), on/after `startDate`. There is no assumed monthly
+ * target - nothing counts until it's actually logged, including a budget's own funding
+ * transfer, so a budget reads ₹0 until you log that money moving in, not its target.
+ * Allowed to go negative (spending before logging that period's allocation is normal,
+ * not an error - the user confirmed this is the point, not a bug, with the Travel/trip
+ * example this is tested against).
+ *
+ * The one exception is a `residual: true` budget (e.g. "Luxury"): it has no funding
+ * category or target of its own, so instead it's Salary income minus every amount
+ * actually logged as moved into *any* other budget (any "<name> Allocation" credit,
+ * wherever it landed) minus its own direct spend - "what's left after every allocation
+ * that's actually happened is set aside."
  * @param {ReturnType<typeof parseBudgets>[number]} budget
- * @param {ReturnType<typeof parseBudgets>} allBudgets - needed only for the residual case
+ * @param {ReturnType<typeof parseBudgets>} allBudgets - unused except for signature
+ *   symmetry; kept so callers don't need to special-case the residual budget
  * @param {Array<{date:Date, type:string, category:string, account:string, amount:number}>} ledgerRows
  */
-function computeBudgetBalance(budget, allBudgets, ledgerRows, startDate, now) {
-  var months = monthsAccrued_(startDate, now);
+function computeBudgetBalance(budget, allBudgets, ledgerRows, startDate) {
+  var inRange = function (row) { return row.date instanceof Date && row.date >= startDate; };
 
   if (budget.residual) {
     var salaryIncome = ledgerRows.reduce(function (sum, row) {
-      if (row.type !== 'Income' || row.category !== 'Salary') return sum;
-      if (!(row.date instanceof Date) || row.date < startDate) return sum;
+      if (row.account !== budget.account || row.type !== 'Income' || row.category !== 'Salary' || !inRange(row)) return sum;
       return sum + row.amount;
     }, 0);
-    var otherAccrued = allBudgets
-      .filter(function (b) { return !b.residual; })
-      .reduce(function (sum, b) { return sum + b.monthlyTarget * months; }, 0);
-    return salaryIncome - otherAccrued - spentAgainstBudget_(budget, ledgerRows, startDate);
+    var allocatedAway = ledgerRows.reduce(function (sum, row) {
+      if (row.type !== 'Transfer' || !isAllocationCategory(row.category) || !inRange(row)) return sum;
+      return sum + row.amount; // allocation credits are stored positive
+    }, 0);
+    var ownSpend = ledgerRows.reduce(function (sum, row) {
+      if (row.account !== budget.account || isAllocationCategory(row.category) || !inRange(row)) return sum;
+      if (row.type !== 'Expense' && row.type !== 'Transfer') return sum;
+      return sum + Math.abs(row.amount);
+    }, 0);
+    return salaryIncome - allocatedAway - ownSpend;
   }
 
-  return budget.monthlyTarget * months - spentAgainstBudget_(budget, ledgerRows, startDate);
+  return ledgerRows.reduce(function (sum, row) {
+    if (!matchesBudget_(row, budget) || !inRange(row)) return sum;
+    return sum + row.amount;
+  }, 0);
 }
 
 /**
@@ -442,6 +466,8 @@ if (typeof module !== 'undefined' && module.exports) {
     sanitizeLlmEntries: sanitizeLlmEntries,
     parseBudgets: parseBudgets,
     computeBudgetBalance: computeBudgetBalance,
+    isAllocationCategory: isAllocationCategory,
+    allocationCategoryFor_: allocationCategoryFor_,
     DEFAULT_CATEGORIES: DEFAULT_CATEGORIES,
     DEFAULT_OPTIONS: DEFAULT_OPTIONS,
     DEFAULT_BUDGETS: DEFAULT_BUDGETS

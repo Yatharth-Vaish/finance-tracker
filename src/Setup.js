@@ -22,6 +22,7 @@ function setupSpreadsheet() {
   setupCategoriesSheet_(ss);
   setupOptionsSheet_(ss);
   setupBudgetsSheet_(ss);
+  ensureAllocationCategories_(ss); // needs Budgets to exist first
   setupDashboardSheet_(ss);
 
   var defaultSheet = ss.getSheetByName('Sheet1');
@@ -116,19 +117,47 @@ function setupBudgetsSheet_(ss) {
     sheet.getRange(2, 1, seed.length, headers.length).setValues(seed);
   }
   sheet.getRange('C1').setNote('Comma list restricting which categories count against this budget. Only needed when two budgets share one Account (e.g. Travel/Gifts on the same card) - empty means everything spent from that Account counts.');
-  sheet.getRange('E1').setNote('TRUE for exactly one budget: "whatever is left" after every other budget\'s target is set aside from this month\'s Salary income. Ignores MonthlyTarget.');
-  sheet.getRange('F1').setNote('TRUE = safe to show automatically (after a save, on /month). FALSE = only shown when you ask with /budget.');
+  sheet.getRange('D1').setNote('Reference only - not used in the balance calculation, which is pure transaction-matching (nothing counts until it\'s actually logged). This is just what you intend to move in each period, to compare against the real Balance.');
+  sheet.getRange('E1').setNote('TRUE for exactly one budget: "whatever is left" after every amount actually logged as moved into another budget is set aside from this month\'s Salary income. Ignores MonthlyTarget.');
+  sheet.getRange('F1').setNote('TRUE = safe to show automatically (after a save, on /month). FALSE = only shown when you ask with /budget or /balance.');
   sheet.setFrozenRows(1);
   sheet.autoResizeColumns(1, headers.length);
 
-  // Set once, never moved by a re-run - resetting it would wipe everyone's accrued
-  // balance back down to one month's worth.
+  // Set once, never moved by a re-run - resetting it would exclude everything logged
+  // before that date from every budget's real balance.
   var props = PropertiesService.getScriptProperties();
   if (!props.getProperty('BUDGET_START_DATE')) {
     var firstOfMonth = new Date();
     firstOfMonth.setDate(1);
     firstOfMonth.setHours(0, 0, 0, 0);
     props.setProperty('BUDGET_START_DATE', firstOfMonth.toISOString());
+  }
+}
+
+/**
+ * Auto-creates a "<budget name> Allocation" Transfer category in the Categories tab for
+ * every non-residual budget, if it doesn't already exist - this is the category that
+ * credits (rather than debits) a budget's account; see isAllocationCategory() in
+ * Parser.js. Generated from the Budgets tab rather than hand-maintained, so the two
+ * never drift out of sync. Idempotent, same append-only pattern as setupCategoriesSheet_.
+ */
+function ensureAllocationCategories_(ss) {
+  var budgets = readBudgets().filter(function (b) { return !b.residual; });
+  if (budgets.length === 0) return;
+
+  var sheet = getCategoriesSheet_();
+  var existingKeys = {};
+  readCategories().forEach(function (c) { existingKeys['Transfer\u0001' + c.category] = true; });
+
+  var missing = budgets
+    .map(function (b) { return b.name + ' Allocation'; })
+    .filter(function (category) { return !existingKeys['Transfer\u0001' + category]; });
+
+  if (missing.length > 0) {
+    var rows = missing.map(function (category) {
+      return ['Transfer', category, category.toLowerCase()];
+    });
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 3).setValues(rows);
   }
 }
 
@@ -168,7 +197,7 @@ function setupDashboardSheet_(ss) {
   writeBreakdown_(sheet, row, 'This Month by UPI App (Expenses)', apps, 'L', Charts.ChartType.COLUMN);
   row += BLOCK_ROWS;
   writeBudgetsTable_(sheet, row);
-  row += 10; // no chart, just a short table - needs less space than a BLOCK_ROWS chart block
+  row += BLOCK_ROWS;
   writeRecentEntries_(sheet, row);
 
   sheet.autoResizeColumns(1, 5);
@@ -182,7 +211,14 @@ function writeTiles_(sheet) {
   sheet.getRange('A4:A8').setValues(labels.map(function (l) { return [l]; })).setFontWeight('bold');
   sheet.getRange('B4:B6').setFormulas([[byType('Income', '')], [byType('Expense', '')], ['=B4+B5']]).setNumberFormat(INR_FORMAT);
   sheet.getRange('B7').setFormula('=IFERROR(B6/B4, 0)').setNumberFormat('0.0%');
-  sheet.getRange('B8').setFormula(byType('Transfer', '-')).setNumberFormat(INR_FORMAT);
+  // Transfer rows in an " Allocation" category (e.g. "Daily Allocation") are credits -
+  // money arriving in a budget's account - stored positive, unlike every other Transfer
+  // category (bills, SIPs, savings), which are debits and stay negative. Filtering to
+  // F:F<0 picks up only the real "money left the building" transfers without needing to
+  // enumerate category names here.
+  sheet.getRange('B8').setFormula(
+    '=-SUMIFS(Ledger!F:F, Ledger!C:C, ">="&' + MONTH_START + ', Ledger!D:D, "Transfer", Ledger!F:F, "<0")'
+  ).setNumberFormat(INR_FORMAT);
 }
 
 function writeMonthlyTable_(sheet, startRow) {
@@ -317,23 +353,37 @@ function writeBreakdown_(sheet, startRow, title, labels, ledgerCol, chartType) {
 }
 
 /**
- * All budgets (public and private - this is the private Sheet, nobody else sees it),
- * current balance via the BUDGETBALANCE() custom function (Ledger.js) so it recalculates
- * live along with the rest of the Dashboard, rather than going stale until the next
- * setupSpreadsheet() run.
+ * All budgets (public and private - this is the private Sheet, nobody else sees it).
+ * Target is the reference "what should move each period" figure from the Budgets tab;
+ * Balance (BUDGETBALANCE()) and This Month (SPENDINGPOWER()) are both live custom-function
+ * cells (Ledger.js) computed from real logged transactions, so this stays current without
+ * re-running setup. A chart makes the target-vs-actual gap visible at a glance - the
+ * whole point of this table existing, since pure transaction-matching means a budget
+ * reads ₹0 until its allocation is actually logged, not just assumed.
  */
 function writeBudgetsTable_(sheet, startRow) {
   sheet.getRange(startRow, 1).setValue('Budgets (not shown automatically in Telegram unless Public)').setFontWeight('bold');
   var headerRow = startRow + 1;
-  sheet.getRange(headerRow, 1, 1, 4).setValues([['Budget', 'Monthly Target', 'Balance', 'Public?']]).setFontWeight('bold');
+  sheet.getRange(headerRow, 1, 1, 5).setValues([['Budget', 'Monthly Target', 'Balance', 'This Month', 'Public?']]).setFontWeight('bold');
 
   var budgets = readBudgets();
   var first = headerRow + 1;
   sheet.getRange(first, 1, budgets.length, 1).setValues(budgets.map(function (b) { return [b.name]; }));
   sheet.getRange(first, 2, budgets.length, 1).setValues(budgets.map(function (b) { return [b.residual ? '' : b.monthlyTarget]; }));
   sheet.getRange(first, 3, budgets.length, 1).setFormulas(budgets.map(function (b) { return ['=BUDGETBALANCE("' + b.name + '")']; }));
-  sheet.getRange(first, 4, budgets.length, 1).setValues(budgets.map(function (b) { return [b.public ? 'Yes' : 'No']; }));
-  sheet.getRange(first, 2, budgets.length, 2).setNumberFormat(INR_FORMAT);
+  sheet.getRange(first, 4, budgets.length, 1).setFormulas(budgets.map(function (b) { return ['=SPENDINGPOWER("' + b.name + '")']; }));
+  sheet.getRange(first, 5, budgets.length, 1).setValues(budgets.map(function (b) { return [b.public ? 'Yes' : 'No']; }));
+  sheet.getRange(first, 2, budgets.length, 3).setNumberFormat(INR_FORMAT);
+
+  var chart = sheet.newChart()
+    .setChartType(Charts.ChartType.COLUMN)
+    .addRange(sheet.getRange(headerRow, 1, budgets.length + 1, 3)) // Budget, Monthly Target, Balance
+    .setPosition(headerRow, 7, 0, 0)
+    .setOption('title', 'Target vs Actual Balance per Budget')
+    .setOption('legend', { position: 'top', textStyle: { fontSize: 12 } })
+    .setOption('height', 300)
+    .build();
+  sheet.insertChart(chart);
 }
 
 function writeRecentEntries_(sheet, startRow) {

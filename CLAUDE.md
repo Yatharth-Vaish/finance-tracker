@@ -74,34 +74,43 @@ non-public budget's balance, even in passing.
   column-A scan), never by row position. Don't optimize this into "remember the row
   index" — a message can append more than one row, and other rows can be deleted in
   between, so position drifts but the ID doesn't.
-- Budgets are **allowance/accrual**, not transfer-matching: a budget's balance is
-  `monthlyTarget * wholeMonthsSinceStartDate - matchedSpend` (`computeBudgetBalance` in
-  `Parser.js`), and it's allowed to go **negative** on purpose — an over-budget month
-  just reduces the next period's balance, it is never floored at zero or blocked. There's
-  deliberately no "ToAccount"/double-entry tracking of the actual monthly transfer
-  between accounts; if the user logs that transfer anyway as a `Transfer` entry, it's
-  purely informational and must not be wired into the budget calculation, or allowances
-  would be double-counted.
-- There are **two distinct readings of a budget**, both built on the one formula above,
-  differing only in which `startDate` is passed in (`Ledger.js`):
-  - `getBudgetBalances()` — the real rollover **balance**, "as per transaction history."
-    Uses `BUDGET_START_DATE` (Script Property, set once by `setupBudgetsSheet_`, must
-    never be reset by a later setup run — that would silently erase everyone's accrued
-    balance back to one month's worth). Shown via `/budget` or `/balance`, and the
-    Dashboard's `BUDGETBALANCE()` cells.
-  - `getMonthlySpendingPowers()` — **spending power**, reset to the flat `monthlyTarget`
-    on the 1st of *this* month, no rollover from before. Same formula, `startDate` =
-    first of the current month instead, which makes `monthsAccrued_` always resolve to 1.
-    This is what the auto-shown line after a save, and `/month`, use for `Public`
-    budgets — the user explicitly wants the number shown automatically (possibly in
-    front of someone) to be "how much of this month's allowance is left," not a
-    cross-month total. Don't collapse these back into one reading; they answer different
-    questions on purpose.
+- Budgets are **pure transaction-matching**, not an assumed monthly allowance —
+  `computeBudgetBalance` in `Parser.js` sums every real logged amount that matches a
+  budget (`matchesBudget_`), full stop. A budget reads **₹0 until its funding is actually
+  logged**, not its `MonthlyTarget` — that target is reference-only (shown next to the
+  live balance so the user can compare what *should* move against what *has*). This was
+  a deliberate reversal of an earlier accrual design (`monthlyTarget * monthsElapsed -
+  spend`, which assumed the full target was available from day 1): the user explicitly
+  rejected that once he saw it produce numbers that didn't match reality (a budget
+  showing its full target before he'd actually transferred anything). If you're tempted
+  to reintroduce an assumed-target formula, don't — it was tried and explicitly undone.
+- **Credits need a sign exception.** A `Transfer` row is normally always a debit (stored
+  negative — money left the named `Account`). The one exception: a category ending in
+  `" Allocation"` (e.g. `"Daily Allocation"`) is **money arriving** in that budget's
+  account, stored positive (`isAllocationCategory`, checked in both `appendEntry` and
+  `updateEntryField` in `Ledger.js`). The category name is always `<budget.name>
+  Allocation` by convention (`allocationCategoryFor_`) — no separate column links a
+  budget to its funding category. These rows are auto-created in the Categories tab by
+  `ensureAllocationCategories_` (`Setup.js`) from whatever budgets exist; don't hand-list
+  them anywhere else, or they'll drift out of sync with the Budgets tab. `Income` rows
+  are always credits too, with no category restriction — that's how a budget like Zaggle
+  gets funded (via its existing `Income` category) without needing an Allocation category
+  of its own.
+- **Two distinct readings, same formula, different `startDate`** (`Ledger.js`):
+  - `getBudgetBalances()` — the real **balance**, every matching transaction since
+    `BUDGET_START_DATE` (Script Property, set once by `setupBudgetsSheet_`, never reset
+    by a later run — that would exclude everything logged before the new date). Shown via
+    `/budget`/`/balance`, and the Dashboard's `BUDGETBALANCE()` cells.
+  - `getMonthlySpendingPowers()` — **spending power**, the same formula from the 1st of
+    *this* month only, ignoring anything from before. This is what the auto-shown line
+    after a save, and `/month`, use for `Public` budgets — safe to glance at, and scoped
+    to what's actually happened this month. Don't collapse these into one reading.
 - Two budgets can share one physical `Account` (e.g. Travel and Gifting both funded from
-  one card) — that's what a budget's `Categories` filter is for. They're still computed
-  **fully independently**; one going negative never reduces or caps the other. Don't add
-  cross-budget borrowing logic to "fix" this — it's the intended behavior, confirmed with
-  the user via a concrete worked example in the plan file.
+  one card) via the `Categories` filter on the *debit* side — each uses its own `<name>
+  Allocation` category on the *credit* side, so one never accidentally funds or debits
+  the other. They're still computed **fully independently**; one going negative never
+  reduces or caps the other (confirmed with the user via a concrete worked trip example
+  in the plan file — still valid under this formula, just without an assumed target).
 
 ## Testing
 

@@ -40,14 +40,16 @@ single Google Apps Script project bound to the Sheet, free at personal-use volum
   a card bill doesn't double count purchases you already logged.
 - **Budgets, read two ways** — name a monthly allowance per account (e.g. "Daily ₹10,000
   from Bank Account"), optionally restricted to specific categories when two budgets
-  share one account (Travel + Gifting both on one card, say). Each budget can be read as
-  a **balance** (rolls over month to month — unspent carries forward, an over-budget
-  month carries a deficit forward, never blocked or floored at zero — `/budget` /
-  `/balance`) or as **spending power** (resets to the flat monthly amount on the 1st, no
-  rollover — the auto-shown line after a save, and `/month`). Mark a budget `Public` to
-  have its spending power shown automatically, safe to glance at in front of someone;
-  everything else (and every budget's real balance) only shows via `/budget`/`/balance`,
-  run deliberately.
+  share one account (Travel + Gifting both on one card, say). Balances are **pure
+  transaction-matching**: nothing counts until you actually log it, including a budget's
+  own funding transfer — a budget reads ₹0 at the start of the month, not its target,
+  until you log that money moving in (e.g. `10000 daily allocation`). Overspending before
+  logging that period's funding just goes negative, it's never blocked. Read as a
+  **balance** (every matching transaction since setup — `/budget`/`/balance`) or as
+  **spending power** (the same, but only this month's — the auto-shown line after a save,
+  and `/month`). Mark a budget `Public` to have its spending power shown automatically,
+  safe to glance at in front of someone; everything else (and every budget's full
+  balance) only shows via `/budget`/`/balance`, run deliberately.
 - **One ledger, signed amounts** — income and expense share one table (`Ledger`), with
   amounts signed (+income / −expense), so cash flow is just a `SUM()`.
 - **Auto-built Dashboard** — monthly income/expense/net tiles, a 12-month trend, and this
@@ -200,10 +202,12 @@ tap **↩ Undo**. Whatever the message doesn't say is filled from your last entr
 250 gift partner gpay        → For: Partner, paid with the GPay app
 12000 credit card bill       → Transfer (not counted as spending)
 24000 sip                    → Transfer
+10000 daily allocation       → Transfer, credits the "Daily" budget (see Budgets below)
 ```
 
 The words you can type (`partner`, `gpay`, `cash`...) come from the **Aliases** column of
-the `Options` tab.
+the `Options` tab. A budget's funding category is always `<Budget name> Allocation` —
+these are created automatically in the `Categories` tab from whatever's in `Budgets`.
 
 Commands: `/today` (today's income/expense), `/month` (this month's spending power for
 `Public` budgets only — resets on the 1st, safe to glance at), `/budget` or `/balance`

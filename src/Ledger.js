@@ -73,16 +73,15 @@ function readLedgerRowsForBudgets_() {
 }
 
 /**
- * All budgets' balance as of `startDate` (computeBudgetBalance(..., startDate, now) for
+ * All budgets' balance as of `startDate` (computeBudgetBalance(..., startDate) for
  * each), from a single read of the Ledger - cheaper than one sheet scan per budget.
  */
 function computeAllBudgetBalances_(startDate) {
   var budgets = readBudgets();
   if (budgets.length === 0) return [];
   var ledgerRows = readLedgerRowsForBudgets_();
-  var now = new Date();
   return budgets.map(function (b) {
-    return { name: b.name, balance: computeBudgetBalance(b, budgets, ledgerRows, startDate, now), public: b.public };
+    return { name: b.name, balance: computeBudgetBalance(b, budgets, ledgerRows, startDate), public: b.public };
   });
 }
 
@@ -201,7 +200,8 @@ function appendEntry(entry) {
     var id = Utilities.getUuid();
     var now = new Date();
     var effectiveDate = resolveEntryDate_(entry);
-    var signedAmount = entry.type === 'Income' ? Math.abs(entry.amount) : -Math.abs(entry.amount);
+    var isCredit = entry.type === 'Income' || isAllocationCategory(entry.category);
+    var signedAmount = isCredit ? Math.abs(entry.amount) : -Math.abs(entry.amount);
     sheet.appendRow([
       id,
       now,
@@ -259,8 +259,9 @@ var FIELD_COLUMNS = { type: 4, category: 5, description: 7, payment: 8, account:
 
 /**
  * Patches specific fields of an already-saved row, recomputing the signed Amount if
- * `type` changes (same sign rule as appendEntry). Used by the bot's post-save
- * correction buttons (category/account/method/person taps).
+ * `type` or `category` changes (same credit/debit rule as appendEntry - category alone
+ * can flip it, e.g. correcting into or out of an " Allocation" category). Used by the
+ * bot's post-save correction buttons (category/account/method/person taps).
  * @param {string} id
  * @param {{type?:string, category?:string, account?:string, payment?:string, app?:string, forWho?:string}} patch
  * @returns {boolean} true if a row was found and updated
@@ -278,9 +279,12 @@ function updateEntryField(id, patch) {
       if (col) sheet.getRange(row, col).setValue(patch[field]);
     });
 
-    if (patch.type) {
+    if (patch.type || patch.category) {
+      var effectiveType = patch.type || sheet.getRange(row, FIELD_COLUMNS.type).getValue();
+      var effectiveCategory = patch.category || sheet.getRange(row, FIELD_COLUMNS.category).getValue();
       var amountCell = sheet.getRange(row, 6);
-      var signed = patch.type === 'Income' ? Math.abs(amountCell.getValue()) : -Math.abs(amountCell.getValue());
+      var isCredit = effectiveType === 'Income' || isAllocationCategory(effectiveCategory);
+      var signed = isCredit ? Math.abs(amountCell.getValue()) : -Math.abs(amountCell.getValue());
       amountCell.setValue(signed);
     }
     return true;
