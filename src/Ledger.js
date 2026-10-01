@@ -113,20 +113,26 @@ function getMonthlySpendingPowers() {
 }
 
 /**
- * Custom Sheets function - usable directly in a cell as =BUDGETBALANCE("Daily"). Lets
- * the Dashboard's Budgets table recalculate live (on open/edit) instead of only updating
- * when setupSpreadsheet() is re-run. Apps Script custom functions run in a restricted
- * context but reading the bound spreadsheet and Script Properties both work fine there.
+ * Custom Sheets function - usable directly in a cell as
+ * =BUDGETBALANCE("Daily", Ledger!A2:L). The second argument is never read by this
+ * function; its only purpose is forcing Sheets' dependency graph to know this cell
+ * depends on the Ledger range, so editing or adding a Ledger row actually triggers a
+ * recalculation. Without it, Sheets has no cell reference to watch (the function's only
+ * real argument is a literal string) and this cell can silently show a stale, cached
+ * value indefinitely after a manual Ledger edit - wrong Dashboard numbers that look like
+ * a logic bug but are really a recalculation bug. Every formula that calls this (see
+ * writeBudgetsTable_ in Setup.js) must keep passing that second argument.
  * @param {string} name - must match a Name in the Budgets tab exactly
+ * @param {unknown} [_dependsOnLedger] - unused; see above
  * @returns {number|string} the current balance, or an error string if the name isn't found
  */
-function BUDGETBALANCE(name) {
+function BUDGETBALANCE(name, _dependsOnLedger) {
   var match = getBudgetBalances().find(function (b) { return b.name === name; });
   return match ? match.balance : 'No budget named "' + name + '"';
 }
 
 /** Same as BUDGETBALANCE(), but this month's flat allowance (no rollover) - see getMonthlySpendingPowers(). */
-function SPENDINGPOWER(name) {
+function SPENDINGPOWER(name, _dependsOnLedger) {
   var match = getMonthlySpendingPowers().find(function (b) { return b.name === name; });
   return match ? match.balance : 'No budget named "' + name + '"';
 }

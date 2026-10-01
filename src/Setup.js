@@ -360,6 +360,12 @@ function writeBreakdown_(sheet, startRow, title, labels, ledgerCol, chartType) {
  * re-running setup. A chart makes the target-vs-actual gap visible at a glance - the
  * whole point of this table existing, since pure transaction-matching means a budget
  * reads ₹0 until its allocation is actually logged, not just assumed.
+ *
+ * Both formulas pass `Ledger!A2:L` as a second, unused argument - purely so Sheets knows
+ * these cells depend on the Ledger range and recalculates them when it changes
+ * (including a manual edit, e.g. correcting a mis-logged row). Without that argument the
+ * only real argument is a literal string, so Sheets has no cell reference to watch and
+ * this can show a stale cached value indefinitely - see BUDGETBALANCE's docstring.
  */
 function writeBudgetsTable_(sheet, startRow) {
   sheet.getRange(startRow, 1).setValue('Budgets (not shown automatically in Telegram unless Public)').setFontWeight('bold');
@@ -370,8 +376,8 @@ function writeBudgetsTable_(sheet, startRow) {
   var first = headerRow + 1;
   sheet.getRange(first, 1, budgets.length, 1).setValues(budgets.map(function (b) { return [b.name]; }));
   sheet.getRange(first, 2, budgets.length, 1).setValues(budgets.map(function (b) { return [b.residual ? '' : b.monthlyTarget]; }));
-  sheet.getRange(first, 3, budgets.length, 1).setFormulas(budgets.map(function (b) { return ['=BUDGETBALANCE("' + b.name + '")']; }));
-  sheet.getRange(first, 4, budgets.length, 1).setFormulas(budgets.map(function (b) { return ['=SPENDINGPOWER("' + b.name + '")']; }));
+  sheet.getRange(first, 3, budgets.length, 1).setFormulas(budgets.map(function (b) { return ['=BUDGETBALANCE("' + b.name + '", Ledger!A2:L)']; }));
+  sheet.getRange(first, 4, budgets.length, 1).setFormulas(budgets.map(function (b) { return ['=SPENDINGPOWER("' + b.name + '", Ledger!A2:L)']; }));
   sheet.getRange(first, 5, budgets.length, 1).setValues(budgets.map(function (b) { return [b.public ? 'Yes' : 'No']; }));
   sheet.getRange(first, 2, budgets.length, 3).setNumberFormat(INR_FORMAT);
 

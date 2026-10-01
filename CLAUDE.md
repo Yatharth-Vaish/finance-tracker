@@ -140,6 +140,14 @@ non-public budget's balance, even in passing.
   out later from Account + Category. Deliberately excludes residual budgets, same reason
   as `computeBudgetBalance` doesn't run `matchesBudget_` for them — they don't use that
   rule at all, so a "match" would be fabricated, not just unhelpful.
+- **`BUDGETBALANCE()`/`SPENDINGPOWER()` must always be called with the `Ledger!A2:L`
+  second argument** (`writeBudgetsTable_` in `Setup.js`) — this was a real, confirmed bug:
+  without a cell reference in the formula, Sheets' dependency graph has nothing to watch,
+  so a manual Ledger edit (e.g. correcting a mis-logged row) silently leaves these cells
+  showing a stale cached value, not the corrected one. The second argument is never read
+  by either function — its only job is making Sheets recalculate when the Ledger changes.
+  If you add another custom function that reads the Ledger via `SpreadsheetApp` rather
+  than through its own arguments, it needs the same treatment.
 
 ## Testing
 
