@@ -330,8 +330,20 @@ function extractTags_(description, options, tags) {
 
 /**
  * Fills whatever the message didn't say: account and payment method fall back to what was
- * used last time (so a run of Zaggle purchases needs no taps), then to the first configured
- * option; the person falls back to the first one listed.
+ * used last time *for an entry of this same type* (so a run of Zaggle purchases needs no
+ * taps, and crucially a run of salary deposits doesn't inherit the account you last spent
+ * from), then to the first configured option - except for Income, which is deliberately
+ * left blank rather than guessed. The caller is responsible for passing `last` as the
+ * right bucket for `entry.type` (see getLastPayment(type) in Ledger.js); this function
+ * doesn't know about buckets, just "whatever last applies here."
+ *
+ * Defaulting a *spending* entry to some account is low-stakes (you'll notice and tap to
+ * fix it, and it's usually right anyway - you mostly spend from the same one or two
+ * places). Defaulting an *income* entry is not: picking an arbitrary account would
+ * silently misattribute real money to the wrong budget (this happened in practice - a
+ * salary deposit silently landed on the wrong account and inflated its budget by the
+ * full salary amount). Leaving it blank instead makes the gap visible - the confirmation
+ * shows "Into: —" - rather than confidently wrong.
  * @param {ReturnType<typeof parseEntry>} entry
  * @param {ReturnType<typeof parseOptions>} options
  * @param {{account?:string, method?:string}} [last]
@@ -347,7 +359,8 @@ function applyDefaults(entry, options, last) {
     });
     account = findByName_(supporting, last.account) || supporting[0] || null;
   }
-  if (!account) account = findByName_(accounts, last.account) || accounts[0] || null;
+  if (!account) account = findByName_(accounts, last.account) || null;
+  if (!account && entry.type !== 'Income') account = accounts[0] || null;
 
   var method = null;
   if (account) {

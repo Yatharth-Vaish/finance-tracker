@@ -117,10 +117,27 @@ test('applyDefaults reuses the last account and method when the message says not
   assert.equal(r.app, '');
 });
 
-test('applyDefaults falls back to the first account and its first method', () => {
+test('applyDefaults falls back to the first account and its first method for a spending entry', () => {
   const r = applyDefaults(parseEntry('120 lunch', undefined, options), options);
   assert.equal(r.account, 'Alpha Bank');
   assert.equal(r.method, 'GPay');
+});
+
+test('applyDefaults leaves Income account blank with no signal, rather than guessing', () => {
+  const r = applyDefaults(parseEntry('+50000 salary from work', undefined, options), options);
+  assert.equal(r.account, '');
+  assert.equal(r.payment, '');
+});
+
+test('applyDefaults reuses a prior Income account when passed as `last`, same as it would for spending', () => {
+  const r = applyDefaults(parseEntry('+50000 salary', undefined, options), options, { account: 'Beta Bank', method: 'Paytm' });
+  assert.equal(r.account, 'Beta Bank');
+  assert.equal(r.method, 'Paytm');
+});
+
+test('applyDefaults still fills a named account even for Income with no `last`', () => {
+  const r = applyDefaults(parseEntry('+50000 salary beta', undefined, options), options);
+  assert.equal(r.account, 'Beta Bank');
 });
 
 test('credit card bills and SIPs are Transfers, not expenses', () => {

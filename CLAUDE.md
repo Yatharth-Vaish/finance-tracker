@@ -68,6 +68,21 @@ non-public budget's balance, even in passing.
   cleared to `''`, never passed through as a guess. A blank is what `applyDefaults`
   already knows how to fill sensibly (last used, then first configured); a wrong-but-
   plausible-looking name would silently write bad data instead.
+- **Last-used account tracking is split into two buckets by entry type** —
+  `getLastPayment(type)`/`setLastPayment(type, ...)` in `Ledger.js`, `'Income'` vs
+  everything else (`'Spending'`). This was a real bug fix, not a style choice: with one
+  shared bucket, a salary deposit silently inherited whatever account the user last
+  *spent* from, inflating that account's budget by the full salary amount with no
+  visible error. Each entry in a multi-leg message must look up its own type's bucket
+  (`parseMessageEntries_`) rather than one shared `last` for the whole batch.
+- **`applyDefaults` never guesses an Income account with zero signal** — the final
+  `accounts[0]` fallback in `Parser.js` only applies to non-Income entries. An Income
+  entry with no named account, no matched app, and no prior Income account on record
+  gets `account: ''`, which the confirmation message shows as `Into: —` rather than a
+  specific (and possibly wrong) account. This is deliberate: a wrong *expense* account is
+  low-stakes and gets noticed; a wrong *income* account silently misattributes real money
+  into the wrong budget, which is the bug above. Don't "fix" the blank by reintroducing a
+  fallback here.
 - Entries save immediately on parse now (no more tap-to-confirm) — see `handleMessage_`
   in `Main.js`. Corrections happen after the fact via `updateEntryField`/`deleteEntryById_`
   in `Ledger.js`, both of which look up the row **by ID** (`findRowById_`, a single

@@ -131,13 +131,23 @@ function SPENDINGPOWER(name) {
   return match ? match.balance : 'No budget named "' + name + '"';
 }
 
-function getLastPayment() {
-  var raw = PropertiesService.getScriptProperties().getProperty('LAST_PAYMENT');
+/**
+ * Last-used account/method, tracked in two separate buckets keyed by entry type -
+ * "Income" and everything else ("Spending": Expense + Transfer). Separate buckets so a
+ * run of salary deposits never inherits the account you last spent from, or vice versa;
+ * see applyDefaults() in Parser.js for why that distinction matters.
+ */
+function lastPaymentKey_(entryType) {
+  return entryType === 'Income' ? 'LAST_PAYMENT_INCOME' : 'LAST_PAYMENT_SPENDING';
+}
+
+function getLastPayment(entryType) {
+  var raw = PropertiesService.getScriptProperties().getProperty(lastPaymentKey_(entryType));
   return raw ? JSON.parse(raw) : {};
 }
 
-function setLastPayment(account, method) {
-  PropertiesService.getScriptProperties().setProperty('LAST_PAYMENT', JSON.stringify({ account: account, method: method }));
+function setLastPayment(entryType, account, method) {
+  PropertiesService.getScriptProperties().setProperty(lastPaymentKey_(entryType), JSON.stringify({ account: account, method: method }));
 }
 
 /**
