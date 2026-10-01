@@ -11,7 +11,7 @@ var INR_FORMAT = '₹#,##0';
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Finance Tracker')
-    .addItem('Run setup (Ledger / Categories / Options / Dashboard)', 'setupSpreadsheet')
+    .addItem('Run setup (Ledger / Categories / Options / Budgets / Dashboard)', 'setupSpreadsheet')
     .addItem('Start Telegram polling', 'setupPolling')
     .addToUi();
 }
@@ -21,6 +21,7 @@ function setupSpreadsheet() {
   setupLedgerSheet_(ss);
   setupCategoriesSheet_(ss);
   setupOptionsSheet_(ss);
+  setupBudgetsSheet_(ss);
   setupDashboardSheet_(ss);
 
   var defaultSheet = ss.getSheetByName('Sheet1');
@@ -102,6 +103,35 @@ function setupOptionsSheet_(ss) {
   sheet.autoResizeColumns(1, 4);
 }
 
+function setupBudgetsSheet_(ss) {
+  var sheet = ss.getSheetByName(BUDGETS_SHEET_NAME) || ss.insertSheet(BUDGETS_SHEET_NAME);
+  var headers = ['Name', 'Account', 'Categories', 'MonthlyTarget', 'Residual', 'Public'];
+
+  if (sheet.getLastRow() === 0) {
+    // src/LocalOptions.js's LOCAL_BUDGETS holds your real allowances; without it the
+    // generic DEFAULT_BUDGETS from Parser.js are used. Either way this only seeds an
+    // empty tab - afterwards the sheet is the source of truth, same as Options/Categories.
+    var seed = (typeof LOCAL_BUDGETS !== 'undefined') ? LOCAL_BUDGETS : DEFAULT_BUDGETS;
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    sheet.getRange(2, 1, seed.length, headers.length).setValues(seed);
+  }
+  sheet.getRange('C1').setNote('Comma list restricting which categories count against this budget. Only needed when two budgets share one Account (e.g. Travel/Gifts on the same card) - empty means everything spent from that Account counts.');
+  sheet.getRange('E1').setNote('TRUE for exactly one budget: "whatever is left" after every other budget\'s target is set aside from this month\'s Salary income. Ignores MonthlyTarget.');
+  sheet.getRange('F1').setNote('TRUE = safe to show automatically (after a save, on /month). FALSE = only shown when you ask with /budget.');
+  sheet.setFrozenRows(1);
+  sheet.autoResizeColumns(1, headers.length);
+
+  // Set once, never moved by a re-run - resetting it would wipe everyone's accrued
+  // balance back down to one month's worth.
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('BUDGET_START_DATE')) {
+    var firstOfMonth = new Date();
+    firstOfMonth.setDate(1);
+    firstOfMonth.setHours(0, 0, 0, 0);
+    props.setProperty('BUDGET_START_DATE', firstOfMonth.toISOString());
+  }
+}
+
 var MONTH_START = '(EOMONTH(TODAY(),-1)+1)';
 var BLOCK_ROWS = 17; // vertical space reserved per table + chart
 
@@ -137,6 +167,8 @@ function setupDashboardSheet_(ss) {
   row += BLOCK_ROWS;
   writeBreakdown_(sheet, row, 'This Month by UPI App (Expenses)', apps, 'L', Charts.ChartType.COLUMN);
   row += BLOCK_ROWS;
+  writeBudgetsTable_(sheet, row);
+  row += 10; // no chart, just a short table - needs less space than a BLOCK_ROWS chart block
   writeRecentEntries_(sheet, row);
 
   sheet.autoResizeColumns(1, 5);
@@ -282,6 +314,26 @@ function writeBreakdown_(sheet, startRow, title, labels, ledgerCol, chartType) {
     .setOption('height', 300)
     .build();
   sheet.insertChart(chart);
+}
+
+/**
+ * All budgets (public and private - this is the private Sheet, nobody else sees it),
+ * current balance via the BUDGETBALANCE() custom function (Ledger.js) so it recalculates
+ * live along with the rest of the Dashboard, rather than going stale until the next
+ * setupSpreadsheet() run.
+ */
+function writeBudgetsTable_(sheet, startRow) {
+  sheet.getRange(startRow, 1).setValue('Budgets (not shown automatically in Telegram unless Public)').setFontWeight('bold');
+  var headerRow = startRow + 1;
+  sheet.getRange(headerRow, 1, 1, 4).setValues([['Budget', 'Monthly Target', 'Balance', 'Public?']]).setFontWeight('bold');
+
+  var budgets = readBudgets();
+  var first = headerRow + 1;
+  sheet.getRange(first, 1, budgets.length, 1).setValues(budgets.map(function (b) { return [b.name]; }));
+  sheet.getRange(first, 2, budgets.length, 1).setValues(budgets.map(function (b) { return [b.residual ? '' : b.monthlyTarget]; }));
+  sheet.getRange(first, 3, budgets.length, 1).setFormulas(budgets.map(function (b) { return ['=BUDGETBALANCE("' + b.name + '")']; }));
+  sheet.getRange(first, 4, budgets.length, 1).setValues(budgets.map(function (b) { return [b.public ? 'Yes' : 'No']; }));
+  sheet.getRange(first, 2, budgets.length, 2).setNumberFormat(INR_FORMAT);
 }
 
 function writeRecentEntries_(sheet, startRow) {

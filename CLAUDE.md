@@ -22,10 +22,18 @@ Telegram bot → Google Sheets cash flow ledger, running entirely on Google Apps
 ## Privacy (important)
 
 This repo is public. Real bank/card/person names must never be committed - not in code,
-tests, README examples or commit messages. They live in the private Sheet's `Options` tab,
-seeded from `src/LocalOptions.js`, which is gitignored (but still pushed to Apps Script by
-clasp). `DEFAULT_OPTIONS` in `Parser.js` and every test fixture must stay generic. Before
-any `git push`, grep the staged diff for real account/bank/person names.
+tests, README examples or commit messages. They live in the private Sheet's `Options` and
+`Budgets` tabs, seeded from `src/LocalOptions.js` (`LOCAL_OPTIONS` and `LOCAL_BUDGETS`),
+which is gitignored (but still pushed to Apps Script by clasp). `DEFAULT_OPTIONS` /
+`DEFAULT_BUDGETS` in `Parser.js` and every test fixture must stay generic. Before any
+`git push`, grep the staged diff for real account/bank/person names.
+
+The `Budgets` tab's `Public` column is a second, user-facing layer of the same concern:
+even generic-looking numbers (an account's real balance, an investment transfer amount)
+can be sensitive if the user glances at the chat in front of someone. Only budgets marked
+`Public` appear automatically (after a save, on `/month`); everything else requires the
+user to deliberately run `/budget`. Don't make a new auto-shown message include a
+non-public budget's balance, even in passing.
 
 ## Conventions
 
@@ -66,6 +74,21 @@ any `git push`, grep the staged diff for real account/bank/person names.
   column-A scan), never by row position. Don't optimize this into "remember the row
   index" — a message can append more than one row, and other rows can be deleted in
   between, so position drifts but the ID doesn't.
+- Budgets are **allowance/accrual**, not transfer-matching: a budget's balance is
+  `monthlyTarget * wholeMonthsSinceBudgetStartDate - matchedSpend` (`computeBudgetBalance`
+  in `Parser.js`), and it's allowed to go **negative** on purpose — an over-budget month
+  just reduces next month's balance, it is never floored at zero or blocked. There's
+  deliberately no "ToAccount"/double-entry tracking of the actual monthly transfer
+  between accounts; if the user logs that transfer anyway as a `Transfer` entry, it's
+  purely informational and must not be wired into the budget calculation, or allowances
+  would be double-counted. `BUDGET_START_DATE` (Script
+  Properties, set once by `setupBudgetsSheet_`) must never be reset by a later setup run —
+  that would silently erase everyone's accrued balance back to one month's worth.
+- Two budgets can share one physical `Account` (e.g. Travel and Gifting both funded from
+  one card) — that's what a budget's `Categories` filter is for. They're still computed
+  **fully independently**; one going negative never reduces or caps the other. Don't add
+  cross-budget borrowing logic to "fix" this — it's the intended behavior, confirmed with
+  the user via a concrete worked example in the plan file.
 
 ## Testing
 

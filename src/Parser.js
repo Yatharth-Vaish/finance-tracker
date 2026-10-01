@@ -11,6 +11,7 @@ var DEFAULT_CATEGORIES = [
   { type: 'Expense', category: 'Bills & Utilities', keywords: ['electricity', 'water bill', 'wifi', 'broadband', 'internet', 'postpaid', 'gas bill', 'recharge', 'mobile bill'] },
   { type: 'Expense', category: 'Shopping', keywords: ['amazon', 'flipkart', 'myntra', 'shopping', 'clothes'] },
   { type: 'Expense', category: 'Gifts', keywords: ['gift', 'gifts', 'present'] },
+  { type: 'Expense', category: 'Travel', keywords: ['travel', 'flight', 'train', 'hotel', 'trip'] },
   { type: 'Expense', category: 'Health', keywords: ['medicine', 'doctor', 'pharmacy', 'hospital', 'gym'] },
   { type: 'Expense', category: 'Entertainment', keywords: ['movie', 'bookmyshow', 'concert', 'game'] },
   { type: 'Expense', category: 'Subscriptions', keywords: ['netflix', 'spotify', 'prime', 'hotstar', 'subscription', 'youtube premium'] },
@@ -43,6 +44,22 @@ var DEFAULT_OPTIONS = [
   ['Person', 'Me', '', ''],
   ['Person', 'Partner', '', 'partner'],
   ['Person', 'Family', '', 'family, fam']
+];
+
+/**
+ * Generic starter rows for the Budgets tab: [Name, Account, Categories, MonthlyTarget, Residual, Public].
+ * Categories is a comma list restricting which Expense/Transfer categories count against
+ * this budget when its Account is shared by more than one budget; empty means "anything
+ * spent from this account counts." Residual=TRUE means "whatever's left" (see
+ * computeBudgetBalance) and ignores MonthlyTarget. Public=TRUE means this budget's
+ * balance is safe to show automatically (e.g. after a save) rather than only on request.
+ * Real account names belong in the private Sheet (or the gitignored src/LocalOptions.js
+ * seed as LOCAL_BUDGETS), never in this public file.
+ */
+var DEFAULT_BUDGETS = [
+  ['Daily', 'Bank Account', '', 10000, 'FALSE', 'TRUE'],
+  ['Savings', 'Bank Account', '', 5000, 'FALSE', 'FALSE'],
+  ['Luxury', 'Bank Account', '', 0, 'TRUE', 'FALSE']
 ];
 
 var AMOUNT_PATTERN = /(₹|rs\.?\s*)?(\d+(?:\.\d+)?)(k)?\b/i;
@@ -109,6 +126,86 @@ function parseOptions(rows) {
     }
   });
   return { accounts: accounts, people: people };
+}
+
+function parseBool_(value) {
+  return /^(true|yes|1)$/i.test(String(value || '').trim());
+}
+
+/**
+ * @param {Array<Array<string>>} rows - Budgets tab rows (without the header):
+ *   [Name, Account, Categories, MonthlyTarget, Residual, Public]
+ * @returns {Array<{name:string, account:string, categories:string[], monthlyTarget:number, residual:boolean, public:boolean}>}
+ */
+function parseBudgets(rows) {
+  return (rows || [])
+    .filter(function (row) { return String(row[0] || '').trim(); })
+    .map(function (row) {
+      return {
+        name: String(row[0]).trim(),
+        account: String(row[1] || '').trim(),
+        categories: splitList_(row[2]),
+        monthlyTarget: Number(row[3]) || 0,
+        residual: parseBool_(row[4]),
+        public: parseBool_(row[5])
+      };
+    });
+}
+
+/**
+ * Whole calendar months between `startDate`'s month and `now`'s month, inclusive of
+ * both (a budget's full allowance is available from day 1 of its start month, not
+ * prorated) - e.g. start=Sep 15, now=Sep 20 -> 1; now=Oct 1 -> 2. Never negative.
+ */
+function monthsAccrued_(startDate, now) {
+  var months = (now.getFullYear() * 12 + now.getMonth()) - (startDate.getFullYear() * 12 + startDate.getMonth()) + 1;
+  return Math.max(0, months);
+}
+
+/**
+ * Sum of |Amount| for Expense/Transfer rows (never Income - this is "money that left
+ * the account") on `budget.account`, on/after `startDate`, restricted to
+ * `budget.categories` when that list is non-empty.
+ * @param {{account:string, categories:string[]}} budget
+ * @param {Array<{date:Date, type:string, category:string, account:string, amount:number}>} ledgerRows
+ */
+function spentAgainstBudget_(budget, ledgerRows, startDate) {
+  return ledgerRows.reduce(function (sum, row) {
+    if (row.account !== budget.account) return sum;
+    if (row.type !== 'Expense' && row.type !== 'Transfer') return sum;
+    if (!(row.date instanceof Date) || row.date < startDate) return sum;
+    if (budget.categories.length > 0 && budget.categories.indexOf(row.category) === -1) return sum;
+    return sum + Math.abs(row.amount);
+  }, 0);
+}
+
+/**
+ * A budget's current balance: `monthlyTarget * wholeMonthsElapsed - spendMatchedToIt`,
+ * allowed to go negative (an over-budget month reduces next month's balance - that's
+ * intended, not a bug; see the plan's Travel/trip example). The one exception is a
+ * `residual: true` budget (e.g. "Luxury"), which has no target of its own: it's whatever
+ * Salary income has come in, minus every other budget's accrued target, minus its own
+ * spend - i.e. "what's left after every fixed allowance is set aside."
+ * @param {ReturnType<typeof parseBudgets>[number]} budget
+ * @param {ReturnType<typeof parseBudgets>} allBudgets - needed only for the residual case
+ * @param {Array<{date:Date, type:string, category:string, account:string, amount:number}>} ledgerRows
+ */
+function computeBudgetBalance(budget, allBudgets, ledgerRows, startDate, now) {
+  var months = monthsAccrued_(startDate, now);
+
+  if (budget.residual) {
+    var salaryIncome = ledgerRows.reduce(function (sum, row) {
+      if (row.type !== 'Income' || row.category !== 'Salary') return sum;
+      if (!(row.date instanceof Date) || row.date < startDate) return sum;
+      return sum + row.amount;
+    }, 0);
+    var otherAccrued = allBudgets
+      .filter(function (b) { return !b.residual; })
+      .reduce(function (sum, b) { return sum + b.monthlyTarget * months; }, 0);
+    return salaryIncome - otherAccrued - spentAgainstBudget_(budget, ledgerRows, startDate);
+  }
+
+  return budget.monthlyTarget * months - spentAgainstBudget_(budget, ledgerRows, startDate);
 }
 
 /**
@@ -343,7 +440,10 @@ if (typeof module !== 'undefined' && module.exports) {
     applyDefaults: applyDefaults,
     guessCategory: guessCategory,
     sanitizeLlmEntries: sanitizeLlmEntries,
+    parseBudgets: parseBudgets,
+    computeBudgetBalance: computeBudgetBalance,
     DEFAULT_CATEGORIES: DEFAULT_CATEGORIES,
-    DEFAULT_OPTIONS: DEFAULT_OPTIONS
+    DEFAULT_OPTIONS: DEFAULT_OPTIONS,
+    DEFAULT_BUDGETS: DEFAULT_BUDGETS
   };
 }

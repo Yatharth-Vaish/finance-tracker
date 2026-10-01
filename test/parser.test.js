@@ -244,3 +244,99 @@ test('sanitizeLlmEntries drops a malformed date instead of passing it through', 
   const r = sanitizeLlmEntries([{ type: 'Expense', amount: 60, category: 'Food', date: 'yesterday' }], DEFAULT_CATEGORIES, options);
   assert.equal('date' in r[0], false);
 });
+
+const { parseBudgets, computeBudgetBalance } = require('../src/Parser.js');
+
+const budgetRows = [
+  ['Daily', 'Alpha Bank', '', 6000, 'FALSE', 'TRUE'],
+  ['Food Allowance', 'Meal Card', '', 4000, 'FALSE', 'TRUE'],
+  ['Investment', 'Beta Bank', '', 20000, 'FALSE', 'FALSE'],
+  ['Travel', 'Gamma Bank', 'Travel', 3000, 'FALSE', 'FALSE'],
+  ['Gifting', 'Gamma Bank', 'Gifts', 4000, 'FALSE', 'FALSE'],
+  ['Everything Else', 'Alpha Bank', '', 0, 'TRUE', 'FALSE']
+];
+const budgets = parseBudgets(budgetRows);
+const byName = (name) => budgets.find((b) => b.name === name);
+
+function row(date, type, category, account, amount) {
+  return { date: new Date(date), type, category, account, amount };
+}
+
+test('parseBudgets reads the Budgets tab row shape, including Residual/Public flags', () => {
+  assert.equal(budgets.length, 6);
+  const residual = byName('Everything Else');
+  assert.equal(residual.account, 'Alpha Bank');
+  assert.equal(residual.residual, true);
+  assert.equal(residual.public, false);
+  const daily = byName('Daily');
+  assert.equal(daily.monthlyTarget, 6000);
+  assert.equal(daily.public, true);
+  const travel = byName('Travel');
+  assert.deepEqual(travel.categories, ['Travel']);
+});
+
+test('a budget with no spend shows its full accrued target', () => {
+  const start = new Date('2026-10-01');
+  const now = new Date('2026-10-15');
+  const balance = computeBudgetBalance(byName('Daily'), budgets, [], start, now);
+  assert.equal(balance, 6000);
+});
+
+test('accrual steps whole months on the 1st, not prorated by day', () => {
+  const start = new Date('2026-10-01');
+  const rows = [row('2026-10-05', 'Expense', 'Food', 'Alpha Bank', -2000)];
+  assert.equal(computeBudgetBalance(byName('Daily'), budgets, rows, start, new Date('2026-10-20')), 4000);
+  assert.equal(computeBudgetBalance(byName('Daily'), budgets, rows, start, new Date('2026-11-01')), 10000);
+  assert.equal(computeBudgetBalance(byName('Daily'), budgets, rows, start, new Date('2026-12-15')), 16000);
+});
+
+test('Transfer rows count as spend against a budget, not just Expense (e.g. a SIP transfer)', () => {
+  const start = new Date('2026-10-01');
+  const rows = [row('2026-10-10', 'Transfer', 'SIP / Investment', 'Beta Bank', -12000)];
+  assert.equal(computeBudgetBalance(byName('Investment'), budgets, rows, start, new Date('2026-10-15')), 8000);
+});
+
+test('Income rows never count as spend', () => {
+  const start = new Date('2026-10-01');
+  const rows = [row('2026-10-10', 'Income', 'Salary', 'Alpha Bank', 60000)];
+  assert.equal(computeBudgetBalance(byName('Daily'), budgets, rows, start, new Date('2026-10-15')), 6000);
+});
+
+test('spend before the budget start date is excluded', () => {
+  const start = new Date('2026-10-01');
+  const rows = [row('2026-09-15', 'Expense', 'Food', 'Alpha Bank', -5000)];
+  assert.equal(computeBudgetBalance(byName('Daily'), budgets, rows, start, new Date('2026-10-15')), 6000);
+});
+
+test('Travel and Gifting share one account but are tracked fully independently via category', () => {
+  const start = new Date('2026-10-01');
+  const rows = [row('2026-10-10', 'Expense', 'Travel', 'Gamma Bank', -1000)];
+  assert.equal(computeBudgetBalance(byName('Travel'), budgets, rows, start, new Date('2026-10-15')), 2000);
+  assert.equal(computeBudgetBalance(byName('Gifting'), budgets, rows, start, new Date('2026-10-15')), 4000);
+});
+
+test('the trip scenario: Travel goes negative one month and catches up the next, Gifting is untouched', () => {
+  const start = new Date('2026-10-01');
+  const tripSpend = [row('2026-10-20', 'Expense', 'Travel', 'Gamma Bank', -5000)];
+
+  const travelMonth1 = computeBudgetBalance(byName('Travel'), budgets, tripSpend, start, new Date('2026-10-25'));
+  assert.equal(travelMonth1, -2000);
+  const giftMonth1 = computeBudgetBalance(byName('Gifting'), budgets, tripSpend, start, new Date('2026-10-25'));
+  assert.equal(giftMonth1, 4000);
+
+  const travelMonth2 = computeBudgetBalance(byName('Travel'), budgets, tripSpend, start, new Date('2026-11-05'));
+  assert.equal(travelMonth2, 1000);
+  const giftMonth2 = computeBudgetBalance(byName('Gifting'), budgets, tripSpend, start, new Date('2026-11-05'));
+  assert.equal(giftMonth2, 8000);
+});
+
+test('the residual budget is salary income minus every other budget\'s accrued target minus its own spend', () => {
+  const start = new Date('2026-10-01');
+  const now = new Date('2026-10-15');
+  const rows = [
+    row('2026-10-02', 'Income', 'Salary', 'Alpha Bank', 60000),
+    row('2026-10-12', 'Expense', 'Shopping', 'Alpha Bank', -8000)
+  ];
+  // other budgets' accrued targets for 1 month: 6000+4000+20000+3000+4000 = 37000
+  assert.equal(computeBudgetBalance(byName('Everything Else'), budgets, rows, start, now), 60000 - 37000 - 8000);
+});

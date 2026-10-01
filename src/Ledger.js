@@ -5,6 +5,7 @@
 var LEDGER_SHEET_NAME = 'Ledger';
 var CATEGORIES_SHEET_NAME = 'Categories';
 var OPTIONS_SHEET_NAME = 'Options';
+var BUDGETS_SHEET_NAME = 'Budgets';
 // New columns are only ever appended on the right so existing rows and formulas keep their letters.
 var LEDGER_HEADERS = ['ID', 'Timestamp', 'Date', 'Type', 'Category', 'Amount', 'Description', 'Payment', 'Raw', 'Account', 'For', 'App'];
 
@@ -32,6 +33,74 @@ function getOptionsSheet_() {
  */
 function readOptions() {
   return parseOptions(getOptionsSheet_().getDataRange().getValues().slice(1));
+}
+
+function getBudgetsSheet_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName(BUDGETS_SHEET_NAME);
+  if (!sheet) throw new Error('Budgets sheet not found. Run setupSpreadsheet() first.');
+  return sheet;
+}
+
+/**
+ * The six (or however many) named budgets/allowances. Edited by hand in the Budgets
+ * tab; see parseBudgets() in Parser.js for the row format.
+ */
+function readBudgets() {
+  return parseBudgets(getBudgetsSheet_().getDataRange().getValues().slice(1));
+}
+
+/**
+ * When budget accrual started - set once by setupBudgetsSheet_() and never moved, so
+ * re-running setup doesn't reset everyone's accrued balance back to one month's worth.
+ */
+function getBudgetStartDate() {
+  var raw = PropertiesService.getScriptProperties().getProperty('BUDGET_START_DATE');
+  if (raw) return new Date(raw);
+  var firstOfMonth = new Date();
+  firstOfMonth.setDate(1);
+  firstOfMonth.setHours(0, 0, 0, 0);
+  return firstOfMonth;
+}
+
+/**
+ * All budgets with their current balance, computed from a single read of the Ledger
+ * (cheaper than one sheet scan per budget). Rows before the earliest possible budget
+ * date are naturally excluded by computeBudgetBalance's own startDate check, so no
+ * separate date-range read is needed here.
+ * @returns {Array<{name:string, balance:number, public:boolean}>}
+ */
+function getBudgetBalances() {
+  var budgets = readBudgets();
+  if (budgets.length === 0) return [];
+
+  var sheet = getLedgerSheet_();
+  var lastRow = sheet.getLastRow();
+  var ledgerRows = [];
+  if (lastRow > 1) {
+    var values = sheet.getRange(2, 1, lastRow - 1, LEDGER_HEADERS.length).getValues();
+    ledgerRows = values.map(function (row) {
+      return { date: row[2], type: row[3], category: row[4], amount: row[5], account: row[9] };
+    });
+  }
+
+  var startDate = getBudgetStartDate();
+  var now = new Date();
+  return budgets.map(function (b) {
+    return { name: b.name, balance: computeBudgetBalance(b, budgets, ledgerRows, startDate, now), public: b.public };
+  });
+}
+
+/**
+ * Custom Sheets function - usable directly in a cell as =BUDGETBALANCE("Daily"). Lets
+ * the Dashboard's Budgets table recalculate live (on open/edit) instead of only updating
+ * when setupSpreadsheet() is re-run. Apps Script custom functions run in a restricted
+ * context but reading the bound spreadsheet and Script Properties both work fine there.
+ * @param {string} name - must match a Name in the Budgets tab exactly
+ * @returns {number|string} the current balance, or an error string if the name isn't found
+ */
+function BUDGETBALANCE(name) {
+  var match = getBudgetBalances().find(function (b) { return b.name === name; });
+  return match ? match.balance : 'No budget named "' + name + '"';
 }
 
 function getLastPayment() {

@@ -126,7 +126,9 @@ function handleCommand_(chatId, text) {
   } else if (command === '/today') {
     sendMessage(chatId, 'Today: ' + formatSummary_(summaryForToday()));
   } else if (command === '/month') {
-    sendMessage(chatId, 'This month: ' + formatSummary_(summaryForMonth()));
+    sendMessage(chatId, formatPublicSpendingPower_());
+  } else if (command === '/budget') {
+    sendMessage(chatId, formatAllBudgets_());
   } else if (command === '/undo') {
     sendMessage(chatId, 'Delete the most recent entry?', inlineKeyboard([
       [{ text: 'Yes, delete', data: 'ud' }, { text: 'Cancel', data: 'no' }]
@@ -293,7 +295,7 @@ function savedText_(entry) {
   if (entry.description) lines.push(escapeHtml_(entry.description));
   lines.push(entryOwnerLine_(entry));
   lines.push('Today: ' + formatSummary_(summaryForToday()));
-  lines.push('Month: ' + formatSummary_(summaryForMonth()));
+  lines.push(formatPublicSpendingPower_());
   return lines.join('\n');
 }
 
@@ -307,7 +309,32 @@ function savedMultiText_(entries) {
   var net = entries.reduce(function (sum, e) { return sum + (e.type === 'Income' ? e.amount : -e.amount); }, 0);
   lines.push('Net from this message: ' + formatSigned_(net));
   lines.push('Today: ' + formatSummary_(summaryForToday()));
-  lines.push('Month: ' + formatSummary_(summaryForMonth()));
+  lines.push(formatPublicSpendingPower_());
+  return lines.join('\n');
+}
+
+/**
+ * Only the budgets flagged Public in the Budgets tab -
+ * safe to show automatically, including after a save, even if someone glances at the
+ * chat. Everything else (savings, investment transfers, the exact residual/"luxury"
+ * amount) only ever shows via /budget, which the user has to deliberately run.
+ */
+function formatPublicSpendingPower_() {
+  var publicBudgets = getBudgetBalances().filter(function (b) { return b.public; });
+  if (publicBudgets.length === 0) return 'Spending power: (no public budgets configured)';
+  return 'Spending power: ' + publicBudgets.map(function (b) {
+    return escapeHtml_(b.name) + ' ' + formatSigned_(b.balance);
+  }).join(' · ');
+}
+
+/** The full private breakdown, every budget - only ever shown on an explicit /budget. */
+function formatAllBudgets_() {
+  var all = getBudgetBalances();
+  if (all.length === 0) return 'No budgets configured yet - add rows to the Budgets tab.';
+  var lines = ['Budgets:'];
+  all.forEach(function (b) {
+    lines.push('  ' + escapeHtml_(b.name) + ': ' + formatSigned_(b.balance) + (b.public ? ' (public)' : ''));
+  });
   return lines.join('\n');
 }
 
@@ -382,5 +409,5 @@ function helpText_() {
     'A message can describe more than one transaction at once (e.g. someone paying from\n' +
     'your card and sending it back) - it\'ll log each one and you can undo the whole message.\n' +
     'Made a mistake? Tap a button under the confirmation to fix it, or Undo.\n\n' +
-    'Commands: /today /month /undo /help';
+    'Commands: /today (income/expense) /month (public spending power) /budget (full private breakdown) /undo /help';
 }
