@@ -132,22 +132,26 @@ function SPENDINGPOWER(name) {
 }
 
 /**
- * Last-used account/method, tracked in two separate buckets keyed by entry type -
- * "Income" and everything else ("Spending": Expense + Transfer). Separate buckets so a
- * run of salary deposits never inherits the account you last spent from, or vice versa;
- * see applyDefaults() in Parser.js for why that distinction matters.
+ * Last-used account/method, tracked per entry type - and, for Income specifically, per
+ * category too. Income isn't one habit the way spending roughly is: salary/passive
+ * income reliably lands on one account while, say, trading/IPO gains land on another, so
+ * a single shared "last Income account" would have the two overwrite each other's
+ * default every time they alternate. Spending stays one flat bucket (no category
+ * granularity) - that pattern is coarser in practice and splitting it would just mean
+ * more one-off corrections needed before each category "warms up."
  */
-function lastPaymentKey_(entryType) {
-  return entryType === 'Income' ? 'LAST_PAYMENT_INCOME' : 'LAST_PAYMENT_SPENDING';
+function lastPaymentKey_(entryType, category) {
+  if (entryType !== 'Income') return 'LAST_PAYMENT_SPENDING';
+  return 'LAST_PAYMENT_INCOME:' + (category || '');
 }
 
-function getLastPayment(entryType) {
-  var raw = PropertiesService.getScriptProperties().getProperty(lastPaymentKey_(entryType));
+function getLastPayment(entryType, category) {
+  var raw = PropertiesService.getScriptProperties().getProperty(lastPaymentKey_(entryType, category));
   return raw ? JSON.parse(raw) : {};
 }
 
-function setLastPayment(entryType, account, method) {
-  PropertiesService.getScriptProperties().setProperty(lastPaymentKey_(entryType), JSON.stringify({ account: account, method: method }));
+function setLastPayment(entryType, category, account, method) {
+  PropertiesService.getScriptProperties().setProperty(lastPaymentKey_(entryType, category), JSON.stringify({ account: account, method: method }));
 }
 
 /**

@@ -68,12 +68,19 @@ non-public budget's balance, even in passing.
   cleared to `''`, never passed through as a guess. A blank is what `applyDefaults`
   already knows how to fill sensibly (last used, then first configured); a wrong-but-
   plausible-looking name would silently write bad data instead.
-- **Last-used account tracking is split into two buckets by entry type** —
-  `getLastPayment(type)`/`setLastPayment(type, ...)` in `Ledger.js`, `'Income'` vs
-  everything else (`'Spending'`). This was a real bug fix, not a style choice: with one
-  shared bucket, a salary deposit silently inherited whatever account the user last
-  *spent* from, inflating that account's budget by the full salary amount with no
-  visible error. Each entry in a multi-leg message must look up its own type's bucket
+- **Last-used account tracking is split by entry type, and Income further by category** —
+  `getLastPayment(type, category)`/`setLastPayment(type, category, ...)` in `Ledger.js`.
+  Spending (`Expense`/`Transfer`) is one flat bucket regardless of category - that
+  pattern is coarser in practice (mostly the same one or two accounts), and splitting it
+  would just mean more one-off corrections before each category "warms up." Income is
+  split per category (`'Income:Salary'`, `'Income:Trading/IPO'`, ...), because unlike
+  spending, a single person's income categories routinely land on *different* accounts
+  on a stable schedule (salary always to one account, market gains to another) - a flat
+  bucket would have those alternate and clobber each other's default every time. This
+  started as one bug fix (a salary deposit silently inherited whatever account was last
+  *spent* from, inflating that account's budget by the full salary amount with no visible
+  error) and was refined into category-aware buckets once the real usage pattern became
+  clear. Each entry in a multi-leg message must look up its own type+category bucket
   (`parseMessageEntries_`) rather than one shared `last` for the whole batch.
 - **`applyDefaults` never guesses an Income account with zero signal** — the final
   `accounts[0]` fallback in `Parser.js` only applies to non-Income entries. An Income

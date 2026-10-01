@@ -75,7 +75,7 @@ function parseMessageEntries_(text, categories, options) {
   }
   // Each entry looks up its own type's bucket - a multi-leg message can mix Income and
   // Transfer, and each should default from its own history, not get cross-contaminated.
-  entries.forEach(function (e) { applyDefaults(e, options, getLastPayment(e.type)); });
+  entries.forEach(function (e) { applyDefaults(e, options, getLastPayment(e.type, e.category)); });
   return entries;
 }
 
@@ -108,9 +108,9 @@ function handleMessage_(message) {
   var ids = entries.map(function (e) { return appendEntry(e); });
 
   var lastSpend = entries.slice().reverse().find(function (e) { return e.type !== 'Income'; });
-  if (lastSpend) setLastPayment('Spending', lastSpend.account, lastSpend.method);
+  if (lastSpend) setLastPayment('Spending', lastSpend.category, lastSpend.account, lastSpend.method);
   var lastIncome = entries.slice().reverse().find(function (e) { return e.type === 'Income'; });
-  if (lastIncome && lastIncome.account) setLastPayment('Income', lastIncome.account, lastIncome.method);
+  if (lastIncome && lastIncome.account) setLastPayment('Income', lastIncome.category, lastIncome.account, lastIncome.method);
 
   var pid = Utilities.getUuid().slice(0, 8);
   putSaved_(pid, ids, entries);
@@ -168,7 +168,7 @@ function handleCallbackQuery_(cq) {
       setMethod_(entry, method);
       // A manual correction is a strong signal - worth remembering for next time too,
       // same as a freshly-typed account would be.
-      setLastPayment(entry.type === 'Income' ? 'Income' : 'Spending', entry.account, entry.method);
+      setLastPayment(entry.type === 'Income' ? 'Income' : 'Spending', entry.category, entry.account, entry.method);
       return { account: entry.account, payment: entry.payment, app: entry.app };
     });
   } else if (action === 'p') {
