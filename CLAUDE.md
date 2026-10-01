@@ -54,10 +54,38 @@ non-public budget's balance, even in passing.
   Don't remove that per-update try/catch — a single unhandled exception would otherwise
   freeze processing on the same poisoned update forever, since `getUpdates` keeps returning
   it until the offset moves past it.
-- Don't reintroduce a webhook (`doPost` + Web app deployment). It was the original design
-  but Apps Script Web Apps always answer with an HTTP 302, which Telegram's webhook client
-  won't follow — Telegram logs "Wrong response from the webhook: 302 Found" and never
-  delivers reliably. Polling is the fix, not a stopgap.
+- Don't reintroduce a Telegram webhook (`doPost` registered with `setWebhook`). It was the
+  original design but Apps Script Web Apps always answer with an HTTP 302, which
+  Telegram's webhook client won't follow — Telegram logs "Wrong response from the webhook:
+  302 Found" and never delivers reliably. Polling is the fix, not a stopgap.
+- **`doGet()` in `Main.js` is a different thing — a self-triggered poll, not a Telegram
+  webhook.** `.github/workflows/poll-relay.yml` (GitHub Actions, free/unlimited since this
+  repo is public) calls it every ~15s to run `pollUpdates()` more often than Apps Script's
+  own 1-minute trigger floor allows, which is what actually lowers latency (see README
+  "Lower latency"). Free cron services (cron-job.org, Cloudflare Cron Triggers) were tried
+  first and dropped — both floor at 1-minute intervals too, no faster than the native
+  trigger already is; GitHub Actions works around this by looping internally within one
+  5-minute-scheduled run rather than relying on sub-minute external scheduling, which
+  nothing free actually offers. A normal HTTP client follows Apps Script's 302 fine — it's
+  only Telegram's webhook validator that rejects it — so this doesn't hit the problem
+  above. `doGet()` is gated by `?key=` matching the `POLL_SECRET` Script Property
+  (generated via the **Finance Tracker → Generate poll secret** menu item in `Setup.js`,
+  works from either the Sheet's menu or the editor's Run button — `SpreadsheetApp.getUi()`
+  throws from the latter, so it's wrapped in try/catch with `Logger.log` as a fallback
+  surface for the value): the Web App has to be deployed with "Anyone" access for the
+  Actions workflow to call it with no auth step of its own, so the secret is the only
+  thing stopping a stranger who finds the URL from burning your Apps Script execution
+  quota. The actual URL and secret live only as GitHub repo secrets
+  (`FINANCE_TRACKER_WEBAPP_URL`, `FINANCE_TRACKER_POLL_SECRET`), never committed. The
+  native 1-minute trigger from `setupPolling` stays installed regardless, as a fallback —
+  GitHub doesn't guarantee `schedule:` runs fire exactly on time, so if the workflow is
+  delayed or stops, polling degrades to 1-minute instead of going silent.
+- `pollUpdates()` takes `LockService.getScriptLock()` (non-blocking, `tryLock(0)`) around
+  its whole body, so the native trigger and the Actions relay's `doGet()` calls can't
+  process the same Telegram update twice if they land close together. A poll that loses
+  the race just returns immediately rather than queuing — the next call (relay or trigger)
+  picks up whatever's still unprocessed via `LAST_UPDATE_ID`, so nothing is lost, only
+  delayed by one cycle.
 - `Gemini.js` is a fallback chain, not a hard dependency: `parseEntryLLM_` returns `null`
   (not an empty array) on a missing key, an HTTP failure, or zero usable entries, and
   `Main.js` falls back to the regex `parseEntry`. Never let a Gemini failure make the bot

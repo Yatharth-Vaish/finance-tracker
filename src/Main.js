@@ -13,31 +13,62 @@ var PENDING_TTL_SECONDS = 600; // 10 minutes
 var POLL_INTERVAL_MINUTES = 1;
 
 function pollUpdates() {
-  var props = PropertiesService.getScriptProperties();
-  var offset = Number(props.getProperty('LAST_UPDATE_ID') || '0');
+  // Guards against two polls running at once - the native 1-minute trigger and the
+  // external cron hitting doGet() (see below) can otherwise overlap and double-process
+  // the same update before LAST_UPDATE_ID is saved. A poll that loses the race just
+  // skips this run rather than queuing; the next one picks up the same updates.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(0)) return;
 
-  var response = getUpdates(offset);
-  if (!response.ok) {
-    Logger.log('getUpdates failed: ' + JSON.stringify(response));
-    return;
-  }
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var offset = Number(props.getProperty('LAST_UPDATE_ID') || '0');
 
-  response.result.forEach(function (update) {
-    try {
-      if (update.message) {
-        handleMessage_(update.message);
-      } else if (update.callback_query) {
-        handleCallbackQuery_(update.callback_query);
-      }
-    } catch (err) {
-      Logger.log('pollUpdates error on update ' + update.update_id + ': ' + err + (err && err.stack ? '\n' + err.stack : ''));
+    var response = getUpdates(offset);
+    if (!response.ok) {
+      Logger.log('getUpdates failed: ' + JSON.stringify(response));
+      return;
     }
-    offset = update.update_id + 1;
-  });
 
-  if (response.result.length > 0) {
-    props.setProperty('LAST_UPDATE_ID', String(offset));
+    response.result.forEach(function (update) {
+      try {
+        if (update.message) {
+          handleMessage_(update.message);
+        } else if (update.callback_query) {
+          handleCallbackQuery_(update.callback_query);
+        }
+      } catch (err) {
+        Logger.log('pollUpdates error on update ' + update.update_id + ': ' + err + (err && err.stack ? '\n' + err.stack : ''));
+      }
+      offset = update.update_id + 1;
+    });
+
+    if (response.result.length > 0) {
+      props.setProperty('LAST_UPDATE_ID', String(offset));
+    }
+  } finally {
+    lock.releaseLock();
   }
+}
+
+/**
+ * Web App endpoint so an external scheduler (cron-job.org, Cloudflare Cron Triggers,
+ * ...) can call pollUpdates() more often than Apps Script's own time-driven trigger
+ * allows (1-minute floor) - this is what actually lowers latency below ~60s. Requires
+ * `?key=` to match the POLL_SECRET Script Property: the deployed URL has to be public
+ * ("Anyone" access, no Google login) for an external cron to call it with no auth step
+ * of its own, so the secret is what stops a stranger who finds the URL from spending
+ * your Apps Script execution quota. The native trigger (setupPolling) stays installed
+ * too - if the external cron ever stops firing, this just degrades to 1-minute polling
+ * instead of going silent.
+ */
+function doGet(e) {
+  var secret = PropertiesService.getScriptProperties().getProperty('POLL_SECRET');
+  if (!secret || !e || e.parameter.key !== secret) {
+    return ContentService.createTextOutput('Unauthorized');
+  }
+  pollUpdates();
+  return ContentService.createTextOutput('OK');
 }
 
 /**
@@ -54,6 +85,30 @@ function setupPolling() {
   ScriptApp.newTrigger('pollUpdates').timeBased().everyMinutes(POLL_INTERVAL_MINUTES).create();
 
   Logger.log('Polling trigger installed: pollUpdates every ' + POLL_INTERVAL_MINUTES + ' minute(s).');
+}
+
+/**
+ * One-time: generates a random POLL_SECRET Script Property and shows it once. Needed
+ * before pointing an external cron at the Web App URL - see doGet() above.
+ * SpreadsheetApp.getUi() only works when called from the Sheet's own menu (it needs a
+ * UI context) - it throws immediately if run from the Apps Script editor's Run button
+ * instead, so the alert is wrapped in try/catch and the value always goes to Logger.log
+ * too (View → Execution log / Executions) so either invocation path surfaces it.
+ */
+function generatePollSecret() {
+  var props = PropertiesService.getScriptProperties();
+  var existing = props.getProperty('POLL_SECRET');
+  if (existing) {
+    var alreadySetMsg = 'A POLL_SECRET is already set (Project Settings → Script Properties). Delete it first if you want to generate a new one - any cron using the old value will need updating too.';
+    Logger.log(alreadySetMsg);
+    try { SpreadsheetApp.getUi().alert(alreadySetMsg); } catch (e) { /* run from the editor, not the Sheet menu - Logger.log above already covers it */ }
+    return;
+  }
+  var secret = Utilities.getUuid();
+  props.setProperty('POLL_SECRET', secret);
+  var message = 'POLL_SECRET generated:\n\n' + secret + '\n\nCopy this now - use it as the ?key= value for your external cron URL. It will not be shown again (but you can see/change it any time in Project Settings → Script Properties).';
+  Logger.log(message);
+  try { SpreadsheetApp.getUi().alert(message); } catch (e) { /* run from the editor, not the Sheet menu - Logger.log above already covers it */ }
 }
 
 function isAllowedChat_(chatId) {

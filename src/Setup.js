@@ -13,6 +13,7 @@ function onOpen() {
     .createMenu('Finance Tracker')
     .addItem('Run setup (Ledger / Categories / Options / Budgets / Dashboard)', 'setupSpreadsheet')
     .addItem('Start Telegram polling', 'setupPolling')
+    .addItem('Generate poll secret (for low-latency external cron)', 'generatePollSecret')
     .addToUi();
 }
 

@@ -74,6 +74,23 @@ webhook, a time-driven trigger calls `pollUpdates()` once a minute (the fastest 
 Apps Script allows). The tradeoff is up to ~60 seconds of latency per message instead of
 instant push delivery.
 
+**Lowering it further:** `doGet()` in `Main.js` exposes `pollUpdates()` as a Web App
+endpoint, guarded by a `?key=` secret, so something outside Apps Script can call it more
+often than the 1-minute trigger floor. Free cron services (cron-job.org, Cloudflare Cron
+Triggers) turned out not to actually help here - both floor at 1-minute intervals too, so
+calling through them would be no faster than the native trigger already is. What actually
+gets you below 60s for free is `.github/workflows/poll-relay.yml`: a GitHub Actions
+workflow (free, unlimited minutes - this repo is public) that fires every 5 minutes (its
+own floor) but then loops *inside* that one run, calling the Web App every ~15 seconds for
+~4.5 minutes before the next scheduled run takes over. This cuts worst-case latency from
+~60s to ~15s without hosting anything new - the native 1-minute trigger stays installed as
+a fallback so the bot degrades gracefully (not silently) if the Actions workflow ever
+stops firing (GitHub can delay `schedule:` runs under load, especially on free/public
+repos - there's no hard guarantee every 5-minute slot fires exactly on time). See "5b.
+Lower latency" below. A true instant webhook would still need a relay that can accept
+Telegram's own push (e.g. a Cloudflare Worker) - not implemented; not needed once the
+Actions loop gets latency down to ~15s.
+
 ## LLM parsing
 
 `src/Gemini.js` sends the message plus your live categories/accounts/people/budgets to
@@ -181,7 +198,35 @@ function dropdown, click Run), or use the **Finance Tracker → Start Telegram p
 menu in the Sheet once you reload it. This clears any stale webhook registration and
 installs a trigger that checks Telegram for new messages every minute.
 
-No deployment step is needed — there's no web app, nothing to expose publicly.
+No deployment step is needed — there's no web app, nothing to expose publicly. This alone
+gives you 1-minute polling; skip to step 6 if that's fine and come back to 5b later.
+
+### 5b. Lower latency (optional)
+
+Cuts the ~60s worst case down to ~15s via `.github/workflows/poll-relay.yml`, a GitHub
+Actions workflow that calls the bot's poll endpoint every ~15 seconds. (Free cron
+services like cron-job.org and Cloudflare Cron Triggers were tried first but both floor
+at 1-minute intervals too — no faster than the trigger from step 5 already is — so they
+were dropped in favor of this.)
+
+1. In the Sheet: **Finance Tracker → Generate poll secret**. Works from the editor's Run
+   button too — check **Executions** in the left sidebar for the value if you ran it that
+   way. It's saved as `POLL_SECRET` in Script Properties, readable/resettable there later.
+2. **Extensions → Apps Script → Deploy → New deployment.** Type: **Web app**. Execute as:
+   **Me**. Who has access: **Anyone**. Deploy, and copy the Web app URL.
+   (`appsscript.json` already sets these as the defaults.)
+3. Add two **repository secrets** (GitHub repo → Settings → Secrets and variables →
+   Actions → New repository secret) — never commit these, that's the whole reason
+   they're secrets and not code:
+   - `FINANCE_TRACKER_WEBAPP_URL` — the Web app URL from step 2
+   - `FINANCE_TRACKER_POLL_SECRET` — the `POLL_SECRET` from step 1
+4. That's it — `poll-relay.yml` runs automatically on GitHub's schedule (every 5 minutes,
+   looping internally every ~15s) once those two secrets exist. Trigger it manually once
+   via the repo's **Actions** tab → **Low-latency poll relay** → **Run workflow** to
+   confirm it works before waiting on the schedule.
+5. Leave the native 1-minute trigger installed (step 5) — it's the fallback if the Actions
+   workflow ever stops firing (GitHub doesn't guarantee `schedule:` runs exactly on time,
+   especially on free/public repos), so polling degrades instead of going silent.
 
 ### 6. Point the bot at your chat
 

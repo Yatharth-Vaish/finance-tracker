@@ -1,0 +1,38 @@
+name: Low-latency poll relay
+
+# GitHub's own `schedule:` trigger can't go below 5 minutes, and firing can be delayed
+# further under load - so this workflow doesn't rely on being invoked every 15s itself.
+# Instead, each 5-minute run loops internally, calling the bot's doGet() poll endpoint
+# every ~15s for most of that window. That's what actually delivers ~15s latency; the
+# 5-minute schedule is just what keeps a fresh run always picking up where the last one
+# left off. See CLAUDE.md for the full design (doGet/POLL_SECRET in src/Main.js).
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: poll-relay
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Poll every ~15s for this run's window
+        env:
+          WEBAPP_URL: ${{ secrets.FINANCE_TRACKER_WEBAPP_URL }}
+          POLL_SECRET: ${{ secrets.FINANCE_TRACKER_POLL_SECRET }}
+        run: |
+          set -u
+          if [ -z "${WEBAPP_URL:-}" ] || [ -z "${POLL_SECRET:-}" ]; then
+            echo "FINANCE_TRACKER_WEBAPP_URL and/or FINANCE_TRACKER_POLL_SECRET repo secrets are not set - see README's Lower latency section." >&2
+            exit 1
+          fi
+          end=$((SECONDS + 270))
+          while [ "$SECONDS" -lt "$end" ]; do
+            curl -fsS -m 10 "${WEBAPP_URL}?key=${POLL_SECRET}" -o /dev/null \
+              || echo "poll call failed, continuing"
+            sleep 15
+          done
